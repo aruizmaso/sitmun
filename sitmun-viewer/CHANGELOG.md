@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file. The format 
 ### Fixed
 
 - **Search**: The map search box shows its placeholder and tooltip and lists results again. The API-SITNA 4.10.0 result-list template lacks the `for` attribute that `Search.js` looks for, so the control stopped before it bound its text and events. `patches/api-sitna@4.10.0.patch` adds the attribute ([#352](https://github.com/sitmun/sitmun/issues/352)).
+- **Map**: The tools panel no longer shows an empty space between the Download, Draw and measure, Measure, Print and Share titles. API-SITNA 4.10.0 renders these tools as custom elements, which are inline by default. `custom-main.css` now shows them as blocks with no padding inside the tool slots, and keeps the 10px padding around the tool content, as with API-SITNA 4.9.1 ([#353](https://github.com/sitmun/sitmun/issues/353)).
 
 ## [1.3.0] - 2026-11-12
 
