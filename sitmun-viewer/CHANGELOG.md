@@ -6,6 +6,9 @@ All notable changes to this project will be documented in this file. The format 
 
 ### Fixed
 
+- **Search**: The map search box shows its placeholder and tooltip and lists results again. The API-SITNA 4.10.0 result-list template lacks the `for` attribute that `Search.js` looks for, so the control stopped before it bound its text and events. `patches/api-sitna@4.10.0.patch` adds the attribute ([#352](https://github.com/sitmun/sitmun/issues/352)).
+- **Map**: The tools panel no longer shows an empty space between the Download, Draw and measure, Measure, Print and Share titles. API-SITNA 4.10.0 renders these tools as custom elements, which are inline by default. `custom-main.css` now shows them as blocks with no padding inside the tool slots, and keeps the 10px padding around the tool content, as with API-SITNA 4.9.1 ([#353](https://github.com/sitmun/sitmun/issues/353)).
+- **Map**: Map pages no longer log "Could not fetch predefined layer configuration". `SITNA_BASE_URL` was relative in `index.html` and host-rooted in `main.ts`. API-SITNA resolves a relative value against the map route, so it asked for `predefined-layers.json` under `/viewer/public/map/<app>/` and got the viewer page. Both files now set the same absolute URL built from `<base href>` ([#351](https://github.com/sitmun/sitmun/issues/351)).
 - **Map**: The viewer serves `assets/js/d3/d3.js` and the Cesium files for the 3D view again. `angular.json` copies them from `node_modules/d3` and `node_modules/cesium`, but pnpm only links direct dependencies there, and both were only dependencies of API-SITNA. The browser got `index.html` instead and logged `Unexpected token '<'`. The viewer now depends on `d3` 3.5.17 and `cesium` 1.142.0, the versions API-SITNA uses, and `src/angular-assets.spec.ts` fails when an asset copied from `node_modules` has no files ([#361](https://github.com/sitmun/sitmun/issues/361)).
 
 ## [1.3.0] - 2026-11-12
