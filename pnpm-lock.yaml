@@ -422,6 +422,9 @@ catalogs:
     capacitor-native-settings:
       specifier: 8.2.0
       version: 8.2.0
+    cesium:
+      specifier: 1.142.0
+      version: 1.142.0
     codemirror:
       specifier: 6.0.1
       version: 6.0.1
@@ -431,6 +434,9 @@ catalogs:
     cordova-plugin-httpd:
       specifier: 0.9.3
       version: 0.9.3
+    d3:
+      specifier: 3.5.17
+      version: 3.5.17
     dompurify:
       specifier: 3.4.17
       version: 3.4.17
@@ -1247,6 +1253,12 @@ importers:
       api-sitna:
         specifier: 'catalog:'
         version: 4.10.0(patch_hash=79f1f503f699b93a738b7e258e6060f2689537daa23587e36f8c0fc4cbba3f98)(@types/node@24.19.2)
+      cesium:
+        specifier: 'catalog:'
+        version: 1.142.0
+      d3:
+        specifier: 'catalog:'
+        version: 3.5.17
       dompurify:
         specifier: 'catalog:'
         version: 3.4.17
