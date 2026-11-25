@@ -5,6 +5,7 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.sitmun.proxy.middleware.decorator.*;
 import org.sitmun.proxy.middleware.protocols.http.HttpRequestExecutor;
+import org.sitmun.proxy.middleware.protocols.wms.WmsPayloadDto;
 import org.sitmun.proxy.middleware.servicecheck.ProxyCheckSubject;
 import org.sitmun.proxy.middleware.servicecheck.ProxyServiceCheckProperties;
 import org.sitmun.proxy.middleware.servicecheck.ProxyServiceCheckReporter;
@@ -60,6 +61,13 @@ public class RequestExecutorService {
     log.debug("Final request: {}", request.describe());
     lastRequestExecutor = request;
     ProxyCheckSubject subject = ProxyCheckSubject.get();
+    if (subject != null && "WFS".equals(subject.protocol())
+        && context instanceof WmsPayloadDto ogc && "POST".equalsIgnoreCase(ogc.getMethod())
+        && request instanceof HttpRequestExecutor http) {
+      // The backend authorizes a particular destination. A write cannot be
+      // replayed after a redirect or an uncertain transport failure.
+      http.setSendOnce(true);
+    }
     if (subject != null
         && Boolean.TRUE.equals(serviceCheckProperties.enabled())
         && request instanceof HttpRequestExecutor http) {

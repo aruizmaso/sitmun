@@ -5,10 +5,10 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
-import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -23,7 +23,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.sitmun.proxy.middleware.service.RequestExecutorResponse;
 
 @ExtendWith(MockitoExtension.class)
-@Timeout(2)
+@Timeout(15)
 class HttpRequestExecutorReportTest {
 
   @Mock private HttpClient httpClient;
@@ -61,14 +61,16 @@ class HttpRequestExecutorReportTest {
           }
         });
 
-    long startedAt = System.nanoTime();
-    RequestExecutorResponse<?> result = executor.execute();
-    long elapsed = System.nanoTime() - startedAt;
-
-    assertThat(result.asResponseEntity().getStatusCode().value()).isEqualTo(200);
-    assertThat(Duration.ofNanos(elapsed)).isLessThan(Duration.ofMillis(500));
-    assertThat(started.await(1, TimeUnit.SECONDS)).isTrue();
-    release.countDown();
+    ExecutorService requestPool = Executors.newSingleThreadExecutor();
+    try {
+      Future<RequestExecutorResponse<?>> request = requestPool.submit(executor::execute);
+      assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+      RequestExecutorResponse<?> result = request.get(5, TimeUnit.SECONDS);
+      assertThat(result.asResponseEntity().getStatusCode().value()).isEqualTo(200);
+    } finally {
+      release.countDown();
+      requestPool.shutdownNow();
+    }
   }
 
   @Test

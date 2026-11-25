@@ -327,6 +327,46 @@ class HttpRequestExecutorTest {
   }
 
   @Test
+  void wfsOutputFormatPreservesLiteralPlusAndRawBaseComponents() {
+    httpRequestExecutor.setUrl(
+        "https://api.example.com/ws%2Ftest?workspace=a%2Bb&flag#fragment");
+    httpRequestExecutor.addParameter("outputFormat", "application/gml+xml; version=3.2");
+
+    assertThat(httpRequestExecutor.getUrl())
+        .startsWith("https://api.example.com/ws%2Ftest?workspace=a%2Bb&flag&")
+        .contains("outputFormat=application/gml%2Bxml;%20version%3D3.2")
+        .endsWith("#fragment");
+  }
+
+  @Test
+  void distinguishesFormSpaceFromEncodedPlusAndHandlesValuelessParameters() {
+    httpRequestExecutor.setUrl("https://api.example.com/wfs?format=a+b&flag");
+    httpRequestExecutor.addParameter("format", "a+b");
+    httpRequestExecutor.addParameter("flag", "yes");
+
+    assertThat(httpRequestExecutor.getUrl()).contains("?format=a+b&flag&", "format=a%2Bb", "flag=yes");
+
+    httpRequestExecutor.setUrl("https://api.example.com/wfs?format=a%2bb&flag=yes");
+    assertThat(httpRequestExecutor.getUrl()).isEqualTo("https://api.example.com/wfs?format=a%2bb&flag=yes");
+  }
+
+  @Test
+  void aWfsPostUsesOneShotTransport() throws IOException {
+    httpRequestExecutor.setUrl(TEST_URL);
+    httpRequestExecutor.setBody("<Transaction/>");
+    httpRequestExecutor.setSendOnce(true);
+    when(httpClient.executeOnce(any(Request.class))).thenReturn(response);
+    when(response.code()).thenReturn(307);
+
+    assertThat(httpRequestExecutor.execute().asResponseEntity().getStatusCode().value()).isEqualTo(307);
+    ArgumentCaptor<Request> request = ArgumentCaptor.forClass(Request.class);
+    verify(httpClient).executeOnce(request.capture());
+    assertThat(request.getValue().body()).isNotNull();
+    assertThat(request.getValue().body().isOneShot()).isTrue();
+    verify(httpClient, never()).executeRequest(any(Request.class));
+  }
+
+  @Test
   @DisplayName("Should ignore addParameter with blank key or null value")
   void shouldIgnoreInvalidAddParameter() {
     httpRequestExecutor = new HttpRequestExecutor("https://api.example.com", httpClient);

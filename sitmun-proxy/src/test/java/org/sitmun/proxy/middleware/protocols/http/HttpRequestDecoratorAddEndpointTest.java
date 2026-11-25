@@ -174,9 +174,7 @@ class HttpRequestDecoratorAddEndpointTest {
     decorator.addBehavior(requestExecutor, httpContext);
 
     // Then
-    assertThat(requestExecutor.getUrl()).contains("query=test%2520with%2520spaces");
-    assertThat(requestExecutor.getUrl()).contains("filter=active");
-    assertThat(requestExecutor.getUrl()).contains("sort=name");
-    assertThat(requestExecutor.getUrl()).startsWith("https://api.example.com/search");
+    assertThat(requestExecutor.getUrl())
+        .isEqualTo("https://api.example.com/search?query=test%20with%20spaces&filter=active&sort=name");
   }
 }

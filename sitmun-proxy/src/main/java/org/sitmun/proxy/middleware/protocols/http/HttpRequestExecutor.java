@@ -5,15 +5,15 @@ import static org.sitmun.proxy.middleware.dto.ProxyProblemResponses.upstreamAuth
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
-import java.util.function.Predicate;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.MediaType;
@@ -29,10 +29,8 @@ import org.sitmun.proxy.middleware.service.RequestExecutorResponseImpl;
 import org.sitmun.proxy.middleware.servicecheck.UpstreamExchange;
 import org.sitmun.proxy.middleware.utils.UriTemplateExpander;
 import org.sitmun.upstream.http.CertificateRejection;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
 import org.springframework.util.StringUtils;
-import org.springframework.web.util.*;
+import org.springframework.web.util.UriUtils;
 
 @Slf4j
 public class HttpRequestExecutor implements RequestExecutor {
@@ -67,6 +65,7 @@ public class HttpRequestExecutor implements RequestExecutor {
   private final String baseUrl;
   @Setter private String url;
   @Setter private String body;
+  @Setter private boolean sendOnce;
   private Consumer<UpstreamExchange> exchangeListener;
   private Executor listenerExecutor = REPORT_EXECUTOR;
   private UpstreamExchange upstreamExchange;
@@ -124,7 +123,7 @@ public class HttpRequestExecutor implements RequestExecutor {
         httpRequest.headers().names());
 
     long started = System.nanoTime();
-    try (Response r = httpClient.executeRequest(httpRequest)) {
+    try (Response r = sendOnce ? httpClient.executeOnce(httpRequest) : httpClient.executeRequest(httpRequest)) {
       String contentType = r.header("content-type");
       if (r.code() == 401 || r.code() == 403) {
         publish(httpRequest, r.code(), contentType, null, null, started);
@@ -199,7 +198,8 @@ public class HttpRequestExecutor implements RequestExecutor {
         httpRequest.method(),
         httpRequest.headers().names());
 
-    Response response = httpClient.executeRequest(httpRequest);
+    Response response =
+        sendOnce ? httpClient.executeOnce(httpRequest) : httpClient.executeRequest(httpRequest);
     ResponseBody responseBody = response.body();
     InputStream stream =
         responseBody != null ? responseBody.byteStream() : InputStream.nullInputStream();
@@ -215,7 +215,13 @@ public class HttpRequestExecutor implements RequestExecutor {
 
     if (body != null) {
       String contentType = resolvePostContentType();
-      RequestBody requestBody = RequestBody.create(body, MediaType.parse(contentType));
+      RequestBody parsed = RequestBody.create(body, MediaType.parse(contentType));
+      RequestBody requestBody = sendOnce ? new RequestBody() {
+        @Override public MediaType contentType() { return parsed.contentType(); }
+        @Override public long contentLength() throws IOException { return parsed.contentLength(); }
+        @Override public void writeTo(okio.BufferedSink sink) throws IOException { parsed.writeTo(sink); }
+        @Override public boolean isOneShot() { return true; }
+      } : parsed;
       builder.post(requestBody);
     }
     return builder.build();
@@ -234,53 +240,64 @@ public class HttpRequestExecutor implements RequestExecutor {
       return url;
     }
 
+    String expanded = url;
+    Set<String> used = Set.of();
     if (UriTemplateExpander.hasTemplateVariables(url)) {
       UriTemplateExpander.ExpandedResult result =
           UriTemplateExpander.expandWithUsedVariables(url, parameters);
-      String expandedUrl = result.getUri();
-
-      if (result.getUsedVariables().size() == parameters.size()) {
-        return expandedUrl;
-      }
-
-      UriComponents components = UriComponentsBuilder.fromUriString(expandedUrl).build();
-      return rebuildUrlWithMergedQueryParams(
-          components, k -> !result.getUsedVariables().contains(k));
+      expanded = result.getUri();
+      used = result.getUsedVariables();
     }
-
-    UriComponents components = UriComponentsBuilder.fromUriString(url).build();
-    return rebuildUrlWithMergedQueryParams(components, k -> true);
+    return appendQueryParameters(expanded, used);
   }
 
-  private String rebuildUrlWithMergedQueryParams(
-      UriComponents components, Predicate<String> includeParameterKey) {
-    MultiValueMap<String, String> queryParams =
-        new LinkedMultiValueMap<>(components.getQueryParams().size());
+  private String appendQueryParameters(String expanded, Set<String> used) {
+    int fragmentOffset = expanded.indexOf('#');
+    String base = fragmentOffset < 0 ? expanded : expanded.substring(0, fragmentOffset);
+    String fragment = fragmentOffset < 0 ? "" : expanded.substring(fragmentOffset);
+    int queryOffset = base.indexOf('?');
+    String rawQuery = queryOffset < 0 ? "" : base.substring(queryOffset + 1);
+    StringBuilder additions = new StringBuilder();
+    for (var entry : parameters.entrySet()) {
+      String name = entry.getKey();
+      String value = entry.getValue();
+      if (used.contains(name) || containsQueryValue(rawQuery, name, value)) {
+        continue;
+      }
+      if (additions.isEmpty()) {
+        if (queryOffset < 0) additions.append('?');
+        else if (!rawQuery.isEmpty() && !rawQuery.endsWith("&")) additions.append('&');
+      } else {
+        additions.append('&');
+      }
+      additions.append(encodeQueryComponent(name));
+      if (value != null) additions.append('=').append(encodeQueryComponent(value));
+    }
+    return base + additions + fragment;
+  }
 
-    queryParams.putAll(components.getQueryParams());
+  private static boolean containsQueryValue(String query, String name, String value) {
+    for (String component : query.split("&")) {
+      if (component.isEmpty()) continue;
+      int equals = component.indexOf('=');
+      try {
+        if (name.equals(URLDecoder.decode(
+                equals < 0 ? component : component.substring(0, equals), StandardCharsets.UTF_8))
+            && (equals < 0
+                ? value == null
+                : URLDecoder.decode(component.substring(equals + 1), StandardCharsets.UTF_8)
+                    .equals(value))) {
+          return true;
+        }
+      } catch (IllegalArgumentException ignored) {
+        // Preserve opaque configured bytes rather than trying to normalize them.
+      }
+    }
+    return false;
+  }
 
-    parameters.forEach(
-        (k, v) -> {
-          if (!includeParameterKey.test(k)) {
-            return;
-          }
-          List<String> existingValues = queryParams.get(k);
-          if (existingValues == null || !existingValues.contains(v)) {
-            queryParams.add(k, v);
-          }
-        });
-
-    String path = components.getPath() != null ? components.getPath() : "";
-
-    log.debug("Built upstream request with {} query parameter names", queryParams.size());
-
-    return UriComponentsBuilder.newInstance()
-        .scheme(components.getScheme())
-        .host(components.getHost())
-        .port(components.getPort())
-        .path(path)
-        .queryParams(queryParams)
-        .toUriString();
+  private static String encodeQueryComponent(String value) {
+    return UriUtils.encodeQueryParam(value, StandardCharsets.UTF_8).replace("+", "%2B");
   }
 
   public String describe() {

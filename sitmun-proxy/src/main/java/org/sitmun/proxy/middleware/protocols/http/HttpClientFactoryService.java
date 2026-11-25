@@ -55,6 +55,17 @@ public class HttpClientFactoryService implements HttpClient {
     return ManualRedirects.execute(httpRequest, this::getClient);
   }
 
+  @Override
+  public Response executeOnce(Request httpRequest) throws IOException {
+    return getClient(httpRequest.url().host()).newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .retryOnConnectionFailure(false)
+        .build()
+        .newCall(httpRequest)
+        .execute();
+  }
+
   public OkHttpClient getClient(String host) {
     try {
       if (unsafeAllowedHosts.contains("*") || unsafeAllowedHosts.contains(host)) {

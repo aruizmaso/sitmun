@@ -77,6 +77,25 @@ public final class ProxyProblemResponses {
     String fallbackType = status == HttpStatus.UNAUTHORIZED ? PROXY_UNAUTHORIZED : PROXY_FORBIDDEN;
     String fallbackTitle = status == HttpStatus.UNAUTHORIZED ? "Unauthorized" : "Forbidden";
     Optional<String> backendType = safeProblemType(backendProblem);
+    Map<String, Object> properties = new java.util.HashMap<>();
+    properties.put("origin", "backend-config");
+    if (status == HttpStatus.FORBIDDEN && backendType.filter(
+        "https://sitmun.org/problems/wfs-attribute-forbidden"::equals).isPresent()) {
+      JsonNode attributes = backendProblem.path("properties").path("attributes");
+      if (attributes.isArray() && attributes.size() <= 4096) {
+        java.util.List<String> names = new java.util.ArrayList<>();
+        for (JsonNode name : attributes) {
+          if (!name.isTextual() || name.textValue().length() > 2048
+              || !name.textValue().matches("\\{[^{}]*}[^{}:]+")
+              || name.textValue().chars().anyMatch(Character::isISOControl)) {
+            names.clear();
+            break;
+          }
+          names.add(name.textValue());
+        }
+        if (!names.isEmpty()) properties.put("attributes", java.util.List.copyOf(names));
+      }
+    }
 
     ProblemDetail problem =
         ProblemDetail.builder()
@@ -85,7 +104,7 @@ public final class ProxyProblemResponses {
             .title(backendType.flatMap(ignored -> safeTitle(backendProblem)).orElse(fallbackTitle))
             .detail("Backend configuration request was rejected")
             .instance(PROXY_INSTANCE)
-            .properties(Map.of("origin", "backend-config"))
+            .properties(properties)
             .build();
     return response(status, problem);
   }

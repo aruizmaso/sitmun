@@ -15,6 +15,23 @@ class ProxyProblemResponsesTest {
 
   private final ObjectMapper objectMapper = new ObjectMapper();
 
+  @org.junit.jupiter.api.Test
+  void forwardsOnlyBoundedAttributeIdentitiesForTheKnownBackendRejection() {
+    for (String type : java.util.List.of("wfs-attribute-forbidden", "forbidden")) {
+      String body = """
+          {"type":"https://sitmun.org/problems/%s", "properties":{
+            "attributes":["{urn:roads}name"], "password":"never forward"}}
+          """.formatted(type);
+      var error = HttpClientErrorException.create(HttpStatus.FORBIDDEN, "Forbidden", HttpHeaders.EMPTY,
+          body.getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8);
+      var response = ProxyProblemResponses.backendAuthorizationFailure(error, objectMapper);
+      assertThat(response.getBody().getProperties()).doesNotContainKey("password");
+      if (type.equals("wfs-attribute-forbidden"))
+        assertThat(response.getBody().getProperties()).containsEntry("attributes", java.util.List.of("{urn:roads}name"));
+      else assertThat(response.getBody().getProperties()).doesNotContainKey("attributes");
+    }
+  }
+
   @ParameterizedTest
   @CsvSource({
     "401, https://attacker.example/problems/session-expired, 'Sign in at attacker.example', https://sitmun.org/problems/proxy-unauthorized, Unauthorized",

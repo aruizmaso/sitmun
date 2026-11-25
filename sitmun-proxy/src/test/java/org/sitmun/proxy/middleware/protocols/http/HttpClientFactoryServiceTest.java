@@ -1,20 +1,14 @@
 package org.sitmun.proxy.middleware.protocols.http;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.fail;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import java.util.List;
-import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.X509TrustManager;
 import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
 import org.assertj.core.util.Lists;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -39,36 +33,21 @@ class HttpClientFactoryServiceTest {
   }
 
   @Test
-  @DisplayName("Fail with SSLHandshakeException")
-  void failWithSSLHandshakeException() {
-    String url = "https://self-signed.badssl.com";
-    List<String> unsafeAllowedHosts = Lists.list();
-    HttpClient client = new HttpClientFactoryService(unsafeAllowedHosts);
+  @DisplayName("Use certificate validation when host is not unsafe-allowed")
+  void useCertificateValidationWhenHostIsNotUnsafeAllowed() {
+    HttpClientFactoryService client = new HttpClientFactoryService(Lists.list());
+    OkHttpClient http = client.getClient("self-signed.badssl.com");
 
-    Request request = new Request.Builder().url(url).header("Accept", "*/*").build();
-
-    assertThatThrownBy(
-            () -> {
-              try (Response ignored = client.executeRequest(request)) {
-                fail(
-                    "Expected IOException when using safe client against self-signed certificate,"
-                        + " but request completed");
-              }
-            })
-        .isInstanceOf(SSLHandshakeException.class);
+    assertThat(http.x509TrustManager().getAcceptedIssuers()).isNotEmpty();
   }
 
   @Test
-  @DisplayName("Any request use the unsafe client")
+  @DisplayName("Use the unsafe client when every host is allowed")
   void anyRequestUseTheUnsafeClient() {
-    String url = "https://self-signed.badssl.com";
-    List<String> unsafeAllowedHosts = Lists.list("*");
+    HttpClientFactoryService client = new HttpClientFactoryService(Lists.list("*"));
 
-    HttpClient client = new HttpClientFactoryService(unsafeAllowedHosts);
-
-    Request request = new Request.Builder().url(url).header("Accept", "*/*").build();
-    assertConnectsToSelfSignedHost(
-        client, request, "TLS to self-signed host with wildcard allow list");
+    assertThat(client.getClient("upstream.example").x509TrustManager().getAcceptedIssuers())
+        .isEmpty();
   }
 
   @Test
@@ -112,25 +91,12 @@ class HttpClientFactoryServiceTest {
   @Test
   @DisplayName("Use unsafe client when domain matches")
   void useUnsafeClientWhenDomainMatches() {
-    String url = "https://self-signed.badssl.com";
-    List<String> unsafeAllowedHosts = Lists.list("self-signed.badssl.com");
+    HttpClientFactoryService client =
+        new HttpClientFactoryService(Lists.list("self-signed.badssl.com"));
 
-    HttpClient client = new HttpClientFactoryService(unsafeAllowedHosts);
-
-    Request request = new Request.Builder().url(url).header("Accept", "*/*").build();
-    assertConnectsToSelfSignedHost(
-        client, request, "TLS to self-signed host with explicit host allow list");
-  }
-
-  private static void assertConnectsToSelfSignedHost(
-      HttpClient client, Request request, String context) {
-    assertThatCode(
-            () -> {
-              try (Response response = client.executeRequest(request)) {
-                assertThat(response.isSuccessful()).as(context).isTrue();
-              }
-            })
-        .as(context)
-        .doesNotThrowAnyException();
+    assertThat(client.getClient("self-signed.badssl.com").x509TrustManager().getAcceptedIssuers())
+        .isEmpty();
+    assertThat(client.getClient("other.example").x509TrustManager().getAcceptedIssuers())
+        .isNotEmpty();
   }
 }

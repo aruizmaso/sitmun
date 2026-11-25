@@ -1,5 +1,6 @@
 package org.sitmun.proxy.middleware.protocols.http;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import org.sitmun.proxy.middleware.decorator.Context;
 import org.sitmun.proxy.middleware.decorator.RequestDecorator;
@@ -50,7 +51,7 @@ public class HttpRequestDecoratorAddBasicSecurity implements RequestDecorator {
             .getUsername()
             .concat(HttpSecurityConstants.BASIC_CREDENTIAL_SEPARATOR)
             .concat(httpContext.getSecurity().getPassword());
-    String authEncode = Base64.getEncoder().encodeToString(authString.getBytes());
+    String authEncode = Base64.getEncoder().encodeToString(authString.getBytes(StandardCharsets.UTF_8));
     request.setHeader(
         HttpSecurityConstants.HEADER_AUTHORIZATION,
         HttpSecurityConstants.AUTH_SCHEME_BASIC_PREFIX.concat(authEncode));

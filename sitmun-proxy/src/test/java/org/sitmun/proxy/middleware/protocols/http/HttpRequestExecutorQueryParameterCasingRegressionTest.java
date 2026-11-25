@@ -15,8 +15,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
  * Regression tests for desired query parameter <strong>name</strong> casing on upstream URLs.
  *
  * <p>These assert that {@link HttpRequestExecutor} does not rewrite keys to uppercase when merging
- * the configured URL with the parameter map. They fail until {@code
- * rebuildUrlWithMergedQueryParams} preserves casing.
+ * the configured URL with the parameter map.
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("HttpRequestExecutor query parameter name casing (regression)")
