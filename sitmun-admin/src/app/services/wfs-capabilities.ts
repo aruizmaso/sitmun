@@ -39,7 +39,7 @@ export function mapWfsCapabilities(document: unknown): WfsCapabilitiesMapping | 
     if (!typeName) {
       return;
     }
-    srsValues(featureType).forEach((value) => {
+    srsValues(featureType).map(normalizeEpsg).forEach((value) => {
       if (!supportedSRS.includes(value)) {
         supportedSRS.push(value);
       }
@@ -57,6 +57,11 @@ export function mapWfsCapabilities(document: unknown): WfsCapabilitiesMapping | 
     supportedSRS,
     layers,
   };
+}
+
+function normalizeEpsg(value: string): string {
+  const match = /^(?:EPSG:|urn:ogc:def:crs:EPSG:[^:]*:|urn:x-ogc:def:crs:EPSG:|https?:\/\/www\.opengis\.net\/def\/crs\/EPSG\/[^/]+\/)(\d+)$/i.exec(value.trim());
+  return match ? `EPSG:${match[1]}` : value;
 }
 
 export function wfsCapabilityNodes(document: unknown): WfsCapabilityNode[] | null {

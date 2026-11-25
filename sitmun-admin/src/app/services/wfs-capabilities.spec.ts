@@ -24,8 +24,8 @@ describe('mapWfsCapabilities', () => {
       title: 'Parcel service',
       abstract: 'Parcels and roads',
       supportedSRS: [
-        'urn:ogc:def:crs:EPSG::25831',
-        'urn:ogc:def:crs:EPSG::4326',
+        'EPSG:25831',
+        'EPSG:4326',
         'EPSG:3857',
       ],
       layers: [
@@ -85,5 +85,19 @@ describe('mapWfsCapabilities', () => {
 
   it('returns null for a WMS capabilities document', () => {
     expect(mapWfsCapabilities({ WMS_Capabilities: { Service: { Title: 'WMS' } } })).toBeNull();
+  });
+
+  it('normalizes recognized EPSG variants before deduplication, preserving unknown values', () => {
+    const variants = [
+      ' EPSG:25831 ', 'epsg:25831', 'urn:ogc:def:crs:EPSG::25831',
+      'urn:ogc:def:crs:EPSG:9.9:25831', 'urn:x-ogc:def:crs:EPSG:25831',
+      'http://www.opengis.net/def/crs/EPSG/0/25831',
+      'https://www.opengis.net/def/crs/EPSG/0/25831',
+      'urn:ogc:def:crs:OTHER::25831', 'EPSG:invalid', '',
+    ];
+    const mapped = mapWfsCapabilities({
+      WFS_Capabilities: {FeatureTypeList: {FeatureType: {Name: 'roads', OtherCRS: variants}}},
+    });
+    expect(mapped?.supportedSRS).toEqual(['EPSG:25831', 'urn:ogc:def:crs:OTHER::25831', 'EPSG:invalid']);
   });
 });
