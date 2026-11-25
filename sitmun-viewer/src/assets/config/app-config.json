@@ -55,7 +55,6 @@
     "sitna.loadingIndicator"
   ],
   "disabledControls": [
-    "sitna.WFSEdit",
     "sitna.offlineMapMaker"
   ],
   "controlDefaults": {

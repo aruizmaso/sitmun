@@ -173,7 +173,12 @@ export interface AppParameters {
 }
 
 export interface AppTasks {
+  wfsAttributePolicy?: import('../../utils/wfs-attribute-policy').WfsAttributePolicy | null;
+  wfsAttributeSchema?: import('../../utils/wfs-attribute-policy').VerifiedWfsAttributeSchema | null;
   id: string;
+  type?: string;
+  scope?: string;
+  url?: string;
   parameters: any;
   'ui-control': string;
   typeId?: number;
