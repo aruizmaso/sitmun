@@ -220,10 +220,9 @@ export class TaskEditFormComponent extends BaseFormComponent<TaskProjection> {
 
     this.dataTables.register(this.rolesTable)
       .register(this.availabilitiesTable)
-      .register(this.parametersTable)
-      .register(this.fieldsTable);
+      .register(this.parametersTable);
 
-    await this.initCodeLists(['taskEntity.jsonParamType', 'editTask.fieldType', 'editTask.scope', 'queryTask.parameterType']);
+    await this.initCodeLists(['taskEntity.jsonParamType', 'editTask.fieldType', 'editTask.scope', 'queryTask.parameterType', 'cartographyParameter.format']);
     this.initTranslations('Task', ['name'])
 
     const [taskTypes, taskGroups, connections, cartographies] = await Promise.all([
@@ -300,6 +299,7 @@ export class TaskEditFormComponent extends BaseFormComponent<TaskProjection> {
     }
 
     this.entityForm = new FormGroup({
+      wfsAttributePolicy: new FormControl(TaskPropertiesContract.getWfsAttributePolicy(this.entityToEdit.properties)),
       name: new FormControl(this.entityToEdit.name, {
         validators: [Validators.maxLength(512), Validators.required],
         nonNullable: true
@@ -338,7 +338,8 @@ export class TaskEditFormComponent extends BaseFormComponent<TaskProjection> {
       formValues,
       {
         id: id,
-        properties: TaskPropertiesContract.withScope(this.entityToEdit.properties, formValues.scope)
+        properties: TaskPropertiesContract.withWfsAttributePolicy(
+          TaskPropertiesContract.withScope(this.entityToEdit.properties, formValues.scope), formValues.wfsAttributePolicy)
       }
     );
     return Task.fromObject(safeToEdit);
@@ -372,7 +373,13 @@ export class TaskEditFormComponent extends BaseFormComponent<TaskProjection> {
      *
      * @param value - The selected scope value
      */
-    configureForm(value: string) {
+     configureForm(value: string) {
+       // Only the DB scope owns the legacy grid. Hidden mobile fields must not be saved.
+       if (value === this.codeValues.editionTaskScope.dbEdition) {
+         this.dataTables.register(this.fieldsTable);
+       } else {
+         this.dataTables.unregister(this.fieldsTable);
+       }
       if (value === this.codeValues.editionTaskScope.dbEdition) {
         this.entityForm.get('connectionId').enable();
         if (!this.entityForm.get('connectionId').hasValidator(Validators.required)) {
@@ -662,6 +669,7 @@ export class TaskEditFormComponent extends BaseFormComponent<TaskProjection> {
         return of<TaskEditionField[]>([])
       })
       .withRelationsUpdater(async (fields: (TaskEditionField & Status)[]) => {
+        if (!this.isDBEditionScope()) return;
         const fieldsToSave = fields.filter(canKeepOrUpdate).map(value => TaskEditionField.fromObject(value))
         this.entityToEdit.properties = TaskPropertiesContract.withFields(this.entityToEdit.properties, fieldsToSave);
         await firstValueFrom(this.taskService.update(this.entityToEdit));

@@ -10,6 +10,15 @@ export type TaskProperties = Record<string, unknown>;
  * Accessor and updater utilities for task properties.
  */
 export class TaskPropertiesContract {
+  public static getWfsAttributePolicy(properties: TaskProperties | null | undefined): unknown {
+    return this.fromRaw(properties)['wfsAttributePolicy'];
+  }
+
+  public static withWfsAttributePolicy(properties: TaskProperties | null | undefined, policy: unknown): TaskProperties {
+    const result = this.fromRaw(properties);
+    if (policy !== undefined) result['wfsAttributePolicy'] = policy;
+    return result;
+  }
   private static readonly SCOPE = 'scope';
   private static readonly COMMAND = 'command';
   private static readonly PARAMETERS = 'parameters';

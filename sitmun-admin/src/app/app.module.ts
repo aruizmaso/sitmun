@@ -70,6 +70,7 @@ import {TasksBasicComponent} from '@app/components/tasks-basic/tasks-basic.compo
 import {TaskDocumentExportFormComponent} from '@app/components/tasks-document-export/task-form/task-document-export-form.component';
 import {TasksDocumentExportComponent} from '@app/components/tasks-document-export/tasks-document-export.component';
 import {TaskEditFormComponent} from '@app/components/tasks-edit/task-form/task-edit-form.component';
+import {WfsAttributePermissionsComponent} from '@app/components/tasks-edit/task-form/wfs-attribute-permissions.component';
 import {TasksEditComponent} from '@app/components/tasks-edit/tasks-edit.component';
 import {TaskLocatorFormComponent} from '@app/components/tasks-locator/task-form/task-locator-form.component';
 import {TasksLocatorComponent} from '@app/components/tasks-locator/tasks-locator.component';
@@ -235,7 +236,7 @@ import {SetupStatusService} from './services/setup-status.service';
         ConfigurationParameterComponent,
         ConfigurationParameterFormComponent
     ],
-    bootstrap: [AppComponent], imports: [BrowserModule,
+    bootstrap: [AppComponent], imports: [WfsAttributePermissionsComponent, BrowserModule,
         FormsModule,
         ReactiveFormsModule,
         FormField,

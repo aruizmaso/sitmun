@@ -209,9 +209,17 @@
     </mat-card>
   </mat-tab>
   <mat-tab label="{{ 'entity.task.edition.fields' | translate }}">
-    <mat-card appearance="outlined">
+    <mat-card appearance="outlined" class="sitmun-mat-card-margin">
       <mat-card-content>
-        @if (dataLoaded) {
+        @if (dataLoaded && isCartographyEditionScope()) {
+          <app-wfs-attribute-permissions
+            [cartographyId]="entityForm.get('cartographyId').value"
+            [taskContext]="entityForm"
+            [formats]="codeList('cartographyParameter.format')"
+            [policy]="entityForm.get('wfsAttributePolicy').value"
+            (policyChange)="entityForm.get('wfsAttributePolicy').setValue($event); entityForm.markAsDirty()" />
+        }
+        @if (dataLoaded && isDBEditionScope()) {
           <app-relation-grid
             [table]="fieldsTable"
             [allNewElements]="isNewOrDuplicated()"
@@ -220,7 +228,7 @@
           ></app-relation-grid>
         }
         <br/>
-        @if (dataLoaded && !isDBEditionScope()) {
+        @if (dataLoaded && !isDBEditionScope() && !isCartographyEditionScope()) {
           <form [formGroup]='entityForm'>
             <mat-form-field appearance="outline" class="half">
               <mat-label>{{ 'entity.task.query.connection' | translate }}</mat-label>
