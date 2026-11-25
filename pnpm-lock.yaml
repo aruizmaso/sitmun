@@ -569,7 +569,7 @@ overrides:
   cesium@1.142.0>@cesium/widgets: 16.0.0
 
 patchedDependencies:
-  api-sitna@4.10.0: 79f1f503f699b93a738b7e258e6060f2689537daa23587e36f8c0fc4cbba3f98
+  api-sitna@4.10.0: e796265a0bb53f7434499a47dd338def6982540b5522b665dcefd4d20881ded5
 
 importers:
 
@@ -1246,7 +1246,7 @@ importers:
         version: 18.1.0(@angular/common@22.2.5(@angular/core@22.2.5(@angular/compiler@22.2.5)(rxjs@7.8.2)(zone.js@0.15.1))(rxjs@7.8.2))(@angular/core@22.2.5(@angular/compiler@22.2.5)(rxjs@7.8.2)(zone.js@0.15.1))(@ngx-translate/core@18.1.0(@angular/common@22.2.5(@angular/core@22.2.5(@angular/compiler@22.2.5)(rxjs@7.8.2)(zone.js@0.15.1))(rxjs@7.8.2))(@angular/core@22.2.5(@angular/compiler@22.2.5)(rxjs@7.8.2)(zone.js@0.15.1))(rxjs@7.8.2))
       api-sitna:
         specifier: 'catalog:'
-        version: 4.10.0(patch_hash=79f1f503f699b93a738b7e258e6060f2689537daa23587e36f8c0fc4cbba3f98)(@types/node@24.19.2)
+        version: 4.10.0(patch_hash=e796265a0bb53f7434499a47dd338def6982540b5522b665dcefd4d20881ded5)(@types/node@24.19.2)
       dompurify:
         specifier: 'catalog:'
         version: 3.4.17
@@ -14452,7 +14452,7 @@ snapshots:
 
   anynum@1.0.1: {}
 
-  api-sitna@4.10.0(patch_hash=79f1f503f699b93a738b7e258e6060f2689537daa23587e36f8c0fc4cbba3f98)(@types/node@24.19.2):
+  api-sitna@4.10.0(patch_hash=e796265a0bb53f7434499a47dd338def6982540b5522b665dcefd4d20881ded5)(@types/node@24.19.2):
     dependencies:
       '@cesium/engine': 18.3.0
       '@cesium/widgets': 12.3.0

@@ -255,3 +255,1652 @@ index 82ba279b2c673c6bda2cc18b33fd3e4e526db43d..013f081c67c2c3d6535d4de71ec0c2e9
          if (capabilities) {
              capabilities = wfsParser.Parse(capabilities);
              //añadir prefijo a los atributos simples y pue empiecen por http
+diff --git a/SITNA/layer/Vector.js b/SITNA/layer/Vector.js
+--- a/SITNA/layer/Vector.js
++++ b/SITNA/layer/Vector.js
+@@ -1104,8 +1104,8 @@
+         this.wrap.setModifiable(modifiable);
+     }
+ 
+-    applyEdits(inserts, updates, deletes) {
+-        return this.wrap.sendTransaction(inserts, updates, deletes);
++    applyEdits(inserts, updates, deletes, sync) {
++        return this.wrap.sendTransaction(inserts, updates, deletes, sync);
+     }
+ 
+     refresh() {
+diff --git a/TC.js b/TC.js
+--- a/TC.js
++++ b/TC.js
+@@ -315,6 +315,7 @@
+             fetchOptions.body = data;
+         }
+ 
++        if (options.sitmunWfsAttributeErrors && options.signal) fetchOptions.signal = options.signal;
+         fetch(url, fetchOptions)
+             .then(async response => {
+                 if (response.ok) {
+@@ -340,10 +341,26 @@
+                     }
+                 }
+                 else {
++                    let problem;
++                    let wfsException;
++                    const contentType = response.headers.get('Content-Type') ?? '';
++                    if (options.sitmunWfsAttributeErrors && response.status >= 400 && response.status < 500) {
++                        try {
++                            if ([401, 403].includes(response.status) && contentType.includes('application/problem+json')) {
++                                const text = await response.text();
++                                if (text.length <= 131072) problem = JSON.parse(text);
++                            } else if (contentType.includes('xml')) {
++                                const text = await response.text();
++                                if (text.length <= 131072) wfsException = new DOMParser().parseFromString(text, 'application/xml');
++                            }
++                        } catch { /* Preserve the original HTTP failure. */ }
++                    }
+                     reject({
+                         status: response.status,
+                         msg: response.statusText,
+-                        url: url
++                        url: url,
++                        problem: problem,
++                        wfsException: wfsException
+                     });
+                 }
+             })
+diff --git a/TC/control/AttributesEdit.js b/TC/control/AttributesEdit.js
+--- a/TC/control/AttributesEdit.js
++++ b/TC/control/AttributesEdit.js
+@@ -78,6 +78,9 @@
+     }
+ 
+     #feature;
++    #sitmunRenderRevision = 0;
++    sitmunAttributeIsolationVersion = 1;
++    sitmunAttributesSuspended = false;
+     #attributeData = [];
+     #clientControl;
+     #clientControlAbortController;
+@@ -153,6 +156,8 @@
+     }
+ 
+     async render(callback) {
++        if (this.sitmunAttributesSuspended) return;
++        const sitmunRenderRevision = this.#sitmunRenderRevision;
+         const renderObject = {};
+ 
+         if (this.#feature) {
+@@ -302,6 +307,7 @@
+             let geometriesMetadata;
+             let featureTypeMetadata;
+             if (layer) {
++                const feature = this.#feature;
+                 layerAttributeMetadata = [];
+                 try {
+                     featureTypeMetadata = await this.#getFeatureTypeMetadata(layer);
+@@ -311,7 +317,10 @@
+                 }
+                 catch (_e) { }
+ 
++                if (this.#feature !== feature) return;
+                 const featuresToCheck = layer.features;
++                if (this.sitmunAttributesSuspended ||
++                    this.#sitmunRenderRevision !== sitmunRenderRevision) return;
+                 // Inferimos estructura de atributos de otras entidades del mismo tipo
+                 const getCommonAttributeData = function (features) {
+                     return features
+@@ -719,6 +728,8 @@
+     }
+ 
+     set feature(value) {
++        if (this.sitmunAttributesSuspended && value) return;
++        this.#sitmunRenderRevision++;
+         if (this.#feature !== value) {
+             this.#feature = value;
+             this.render();
+@@ -730,6 +741,7 @@
+     }
+ 
+     set clientControl(value) {
++        this.#sitmunRenderRevision++;
+         // Quitamos los listener del control previo
+         this.#clientControlAbortController?.abort();
+         this.#clientControlAbortController = new AbortController();
+@@ -745,7 +757,10 @@
+         }
+         else if (this.#clientControl instanceof Draw) {
+             const onDrawEnd = (e) => {
++                const sitmunRenderRevision = this.#sitmunRenderRevision;
+                 setTimeout(() => {
++                    if (signal.aborted || this.sitmunAttributesSuspended ||
++                        this.#sitmunRenderRevision !== sitmunRenderRevision) return;
+                     this.feature = e.detail?.feature;
+                 }, 100);
+             };
+diff --git a/TC/control/Edit.js b/TC/control/Edit.js
+--- a/TC/control/Edit.js
++++ b/TC/control/Edit.js
+@@ -457,6 +457,30 @@
+         self.modifyControl.id = self.getUID();
+         self.modifyControl.setSnapping(self.snapping);
+         self.history = self.modifyControl.history;
++        self.history.addEventListener('undo', function (e) {
++            if (e.action.type === 'geometryChange') {
++                self.trigger(Consts.event.FEATUREMODIFY, {
++                    feature: e.feature,
++                    layer: e.feature.layer,
++                    geometryChanged: true,
++                    oldData: e.action.newData,
++                    newData: e.action.oldData,
++                    historyAction: 'undo'
++                });
++            }
++        });
++        self.history.addEventListener('redo', function (e) {
++            if (e.action.type === 'geometryChange') {
++                self.trigger(Consts.event.FEATUREMODIFY, {
++                    feature: e.feature,
++                    layer: e.feature.layer,
++                    geometryChanged: true,
++                    oldData: e.action.oldData,
++                    newData: e.action.newData,
++                    historyAction: 'redo'
++                });
++            }
++        });
+ 
+         self.modifyControlAttributesEditor = await self.getModifyControlAttributeEditor();
+         self.modifyControlAttributesEditor.clientControl = self.modifyControl;
+@@ -473,12 +497,13 @@
+         self.polygonDrawControlAttributesEditor.autofill = self.options.autofill;
+ 
+         const featureUpdateTimestamps = new WeakMap();
+-        const addElevation = async function (feature) {
++        const addElevation = async function (feature, permissionCurrent) {
+             if (self.map.options.elevation && feature.getGeometryStride() > 2) {
+                 const timestamp = Date.now();
+                 featureUpdateTimestamps.set(feature, timestamp);
+                 let changed = false;
+                 let elevationTool;
++                let emittedChange = false;
+                 const geometry = structuredClone(feature.geometry);
+                 for (const point of Geometry.iterateCoordinates(geometry)) {
+                     const z = point[2];
+@@ -497,11 +522,14 @@
+                 if (changed) {
+                     const currentTimestamp = featureUpdateTimestamps.get(feature);
+                     // Nos aseguramos de que se actualiza solamente a la última versión de la geometría
+-                    if (timestamp === currentTimestamp) {
++                    if (timestamp === currentTimestamp && permissionCurrent?.() !== false) {
+                         self.setFeatureCoordinates(feature, geometry);
++                        emittedChange = true;
+                     }
+                 }
+-            }
++                return emittedChange;
++            }
++            return false;
+         };
+ 
+         const drawstartHandler = function (e) {
+@@ -511,8 +539,24 @@
+             }
+         };
+         const drawendHandler = async function (e) {
+-            await addElevation(e.feature);
+-            //self.trigger(Consts.event.DRAWEND, { feature: e.feature });
++            // WFSEdit must register the draft after elevation, not when the
++            // child draw event first bubbles to the editor.
++            if (!self.sitmunCaptureEditingPermission) {
++                await addElevation(e.feature);
++                return;
++            }
++            e.stopPropagation();
++            const permissionCurrent = self.sitmunCaptureEditingPermission?.();
++            if (permissionCurrent?.() === false) return;
++            self.sitmunPendingEditEvents = (self.sitmunPendingEditEvents || 0) + 1;
++            try {
++                await addElevation(e.feature, permissionCurrent);
++                if (permissionCurrent?.() !== false) {
++                    self.trigger(Consts.event.DRAWEND, { feature: e.feature });
++                }
++            } finally {
++                self.sitmunPendingEditEvents--;
++            }
+         };
+         const drawcancelHandler = function () {
+             self.cancel();
+@@ -553,7 +597,17 @@
+                 if (e.layer === self.layer) {
+                     self.#measurementControl.displayMeasurement(e.feature);
+                 }
+-                await addElevation(e.feature);
++                const permissionCurrent = self.sitmunCaptureEditingPermission?.();
++                if (permissionCurrent?.() === false) return;
++                self.sitmunPendingEditEvents = (self.sitmunPendingEditEvents || 0) + 1;
++                try {
++                    const elevationChangeEmitted = await addElevation(e.feature, permissionCurrent);
++                    if (!elevationChangeEmitted && permissionCurrent?.() !== false) {
++                        self.trigger(Consts.event.FEATUREMODIFY, { ...e });
++                    }
++                } finally {
++                    self.sitmunPendingEditEvents--;
++                }
+             })
+             .on(Consts.event.FEATUREADD, function (e) {
+                 self.trigger(Consts.event.FEATUREADD, { feature: e.feature, layer: e.layer });
+@@ -1263,4 +1317,4 @@
+ }
+ 
+ Edit.prototype.CLASS = 'tc-ctl-edit';
+-export default Edit;
+\ No newline at end of file
++export default Edit;
+diff --git a/TC/control/Modify.js b/TC/control/Modify.js
+--- a/TC/control/Modify.js
++++ b/TC/control/Modify.js
+@@ -775,6 +775,13 @@
+         return self;
+     }
+ 
++    sitmunResetDeletedFeatures() {
++        this.#deletedFeatures.clear();
++        this.#deletedFeaturesLayer?.clearFeatures();
++        this.#deletedFeatureList.querySelectorAll('li').forEach(li => li.remove());
++        this.#setFeatureSelectedState([]);
++    }
++
+     #flushDeletedFeatures() {
+         this.#deletedFeatures.clear();
+         this.getDeletedFeaturesLayer().then((layer) => layer.clearFeatures());
+diff --git a/TC/control/WFSEdit.js b/TC/control/WFSEdit.js
+--- a/TC/control/WFSEdit.js
++++ b/TC/control/WFSEdit.js
+@@ -136,7 +136,8 @@
+ };
+ 
+ const getLayerTitle = function (layer) {
+-    return layer.getPath ? layer.getPath().join(' • ') : layer.title || layer.id;
++    const layerPath = layer.getPath ? layer.getPath().join(' • ') : '';
++    return layerPath || layer.title || layer.id;
+ };
+ 
+ const getLegendImage = function (layer, geometryType) {
+@@ -183,6 +184,8 @@
+     #removedWatch;
+     #saveBtn;
+     #discardBtn;
++    sitmunAttributeRegistrationVersion = 1;
++    sitmunPermissionHooksVersion = 3;
+     #recropBtn;
+ 
+     constructor() {
+@@ -278,7 +281,8 @@
+                             checkbox.uncheckedIconText = editIconText;
+                             checkbox.dataset.layerId = layerId;
+                             const layer = map.getLayer(layerId);
+-                            if (layer.type === Consts.layerType.WMS) {
++                            checkbox.hidden = self.sitmunCanEditLayer?.(layer) === false;
++                            if (layer.type === Consts.layerType.WMS && self.sitmunCanEditLayer?.(layer) !== false) {
+                                 checkbox.classList.add(Consts.classes.LOADING);
+                                 layer.getWFSCapabilities()
+                                     .then((capabilities) => {
+@@ -297,11 +301,17 @@
+                         setTimeout(() => {
+                             checkbox.checked = self.layer === layer;
+                         }, 500);
+-                        checkbox.disabled = !layer || layer.isRaster() && layer.names.length !== 1;
++                        checkbox.hidden = self.sitmunCanEditLayer?.(layer) === false;
++                        checkbox.disabled = !layer || self.sitmunCanEditLayer?.(layer) === false || layer.isRaster() && layer.names.length !== 1;
+                     },
+                     actionFn: function () {
+                         const checkbox = this;
+                         const layer = map.getLayer(checkbox.dataset.layerId);
++                        if (self.sitmunChangeEditingLayer) {
++                            checkbox.checked = self.layer === layer;
++                            void self.sitmunChangeEditingLayer(layer);
++                            return;
++                        }
+                         const prevLayer = self.layer;
+                         if (layer.names && layer.names.length === 1 || !layer.isRaster()) {
+                             if (layer && prevLayer !== layer) {
+@@ -328,6 +338,7 @@
+         });
+ 
+         self.editControl = await self.#editPromise;
++        await self.sitmunProtectEditControl?.(self.editControl);
+ 
+         self.editControl.getAvailableFeaturesToImport = function () {
+             const candidates = Object.getPrototypeOf(self.editControl).getAvailableFeaturesToImport.call(self.editControl);
+@@ -341,6 +352,7 @@
+             });
+         };
+         self.editControl.importFeatures = function (features) {
++            if (self.sitmunCanMutate?.() === false) return;
+             const featuresToImport = features || this.featuresToImport || [];
+             const layerEditData = self.getLayerEditData();
+             const newFeatures = layerEditData.attributes ? featuresToImport.map(function (feature) {
+@@ -354,13 +366,25 @@
+         };
+         self.editControl
+             .on(Consts.event.DRAWEND, function (e) {
+-                if (self.getLayerEditData().serializable) {
++                if (self.sitmunCanMutate?.() !== false && self.getLayerEditData().serializable) {
+                     self.#storeFeatureAdd(e.feature);
+                 }
+             })
+             .on(Consts.event.FEATUREMODIFY, function (e) {
+                 const feat = e.feature;
++                if (self.sitmunCanMutate?.() === false ||
++                    (self.editControl?.layer?.features && !self.editControl.layer.features.includes(feat))) return;
+                 const fid = feat.provId || feat.id;
++                const auxiliaryWrites = [];
++                const acknowledge = function (operation) {
++                    const tracked = self.sitmunTrackDraftWrite?.(layerEditData, operation) ?? operation;
++                    const registration = tracked.then(storeSuccess, function (error) {
++                        storeFailure();
++                        throw error;
++                    });
++                    e.sitmunRegister?.(registration);
++                    registration.catch(function () {});
++                };
+                 const storeSuccess = function () {
+                     self.#setChangedState(true);
+                 };
+@@ -372,29 +396,43 @@
+                     let storedFeature = layerEditData.addedFeaturesLayer.getFeatureById(fid);
+                     if (storedFeature) {
+                         storedFeature.setCoords(feat.geometry);
++                        for (const key of Object.keys(storedFeature.getData())) {
++                            if (!Object.hasOwn(feat.getData(), key)) storedFeature.unsetData(key);
++                        }
+                         storedFeature.setData(feat.getData());
+-                        storeFeature(self.#getAddedStoragePrefix() + fid, feat).then(storeSuccess, storeFailure);
++                        acknowledge(storeFeature(self.#getAddedStoragePrefix() + fid, feat));
+                     }
+                     else {
+                         storedFeature = layerEditData.modifiedFeaturesLayer.getFeatureById(fid);
++                        const originalFeature = layerEditData.beforeEditLayer?.getFeatureById(fid);
++                        if (storedFeature && originalFeature &&
++                            JSON.stringify(feat.geometry) === JSON.stringify(originalFeature.geometry) &&
++                            JSON.stringify(feat.getData()) === JSON.stringify(originalFeature.getData())) {
++                            layerEditData.modifiedFeaturesLayer.removeFeature(storedFeature);
++                            acknowledge(deleteFeature(self.#getModifiedStoragePrefix() + fid));
++                            return;
++                        }
+                         if (storedFeature) {
+                             storedFeature.setCoords(feat.geometry);
++                            for (const key of Object.keys(storedFeature.getData())) {
++                                if (!Object.hasOwn(feat.getData(), key)) storedFeature.unsetData(key);
++                            }
+                             storedFeature.setData(feat.getData());
+                         }
+                         else {
+-                            layerEditData.modifiedFeaturesLayer.addFeature(self.#createAuxFeature(feat));
++                            auxiliaryWrites.push(layerEditData.modifiedFeaturesLayer.addFeature(self.#createAuxFeature(feat)));
+                         }
+-                        storeFeature(self.#getModifiedStoragePrefix() + fid, feat).then(storeSuccess, storeFailure);
++                        acknowledge(Promise.all([...auxiliaryWrites, storeFeature(self.#getModifiedStoragePrefix() + fid, feat)]));
+                     }
+                 }
+             })
+             .on(Consts.event.FEATUREADD, function (e) {
+-                if (self.getLayerEditData().serializable) {
++                if (self.sitmunCanMutate?.() !== false && self.getLayerEditData().serializable) {
+                     self.#storeFeatureAdd(e.feature);
+                 }
+             })
+             .on(Consts.event.FEATUREREMOVE, function (e) {
+-                if (self.getLayerEditData().serializable) {
++                if (self.sitmunCanMutate?.() !== false && self.getLayerEditData().serializable) {
+                     self.#storeFeatureRemove(e.feature);
+                 }
+             });
+@@ -471,7 +509,7 @@
+         if (self.map) {
+             for (var i = 0, len = self.map.workLayers.length; i < len; i++) {
+                 var wl = self.map.workLayers[i];
+-                if (wl.type === Consts.layerType.WFS && !wl.options.stealth) {
++                if (wl.type === Consts.layerType.WFS && !wl.options.stealth && self.sitmunCanEditLayer?.(wl) !== false) {
+                     editLayers.push({
+                         id: wl.id,
+                         title: wl.title || wl.id
+@@ -511,6 +549,12 @@
+     addUIEventListeners() {
+         const self = this;
+         self.#layerSelect.addEventListener('change', function (_e) {
++            if (self.sitmunChangeEditingLayer) {
++                const target = this.value;
++                this.value = self.layer?.id || '';
++                void self.sitmunChangeEditingLayer(target);
++                return;
++            }
+             self.#setEditState(false);
+             self.getEditableLayer(this.value)
+                 .then(function (layer) {
+@@ -599,12 +643,30 @@
+         document.getElementById(removedColorInputId).addEventListener('change', onColorChange);
+ 
+         self.#saveBtn.addEventListener(Consts.event.CLICK, function () {
++            if (self.sitmunCanSaveAttributes?.() === false) return;
+             TC.confirm(self.getLocaleString('edit.applyEdits.confirm', { layerTitle: getLayerTitle(self.layer) }), function () {
+                 self.applyEdits();
+             });
+         }, { passive: true });
+ 
+         self.#discardBtn.addEventListener(Consts.event.CLICK, function () {
++            if (self.isSyncing) return;
++            if (self.sitmunReconciliationBlocked()) {
++                if (self.sitmunSyncOutcomeUnknown() || self.sitmunCanDiscardAccepted?.() === false) return;
++                const layer = self.layer;
++                const current = self.sitmunCaptureSyncContext?.(layer);
++                TC.confirm(self.sitmunConfirmDiscardAccepted?.() ||
++                    self.getLocaleString('edit.discardEdits.confirm', { layerTitle: getLayerTitle(layer) }), function () {
++                    if (self.layer === layer && current?.() !== false && self.sitmunCanDiscardAccepted?.() !== false) {
++                        void self.sitmunRecoverAccepted?.(layer, () => {
++                            if (self.layer === layer && current?.() !== false &&
++                                self.sitmunCanDiscardAccepted?.() !== false) self.#sitmunSync(true);
++                        });
++                    }
++                });
++                return;
++            }
++            if (self.sitmunDiscardAttributes?.() === true) return;
+             TC.confirm(self.getLocaleString('edit.discardEdits.confirm', { layerTitle: getLayerTitle(self.layer) }), function () {
+                 self.discardEdits();
+             });
+@@ -613,11 +675,13 @@
+         self.#recropBtn.addEventListener(Consts.event.CLICK, function () {
+             if (self.layer) {
+                 const reload = () => {
++                    if (self.isSyncing || self.sitmunReconciliationBlocked()) return;
+                     if (self.layer && self.layer.wfsLayer && TC.filter && TC.filter.Bbox && self.layer.wfsLayer.filter instanceof TC.filter.Bbox) {
+                         const layerEditData = self.getLayerEditData();
+                         self.layer.wfsLayer.filter = new TC.filter.Bbox(null, self.map.getExtent(), self.map.getCRS());
+                         self.layer.wfsLayer.refresh();
+                         if (layerEditData.beforeEditLayer) {
++                            layerEditData.sitmunHasBaseline = false;
+                             layerEditData.beforeEditLayer.filter = self.layer.wfsLayer.filter;
+                             layerEditData.beforeEditLayer.refresh();
+                         }
+@@ -655,7 +719,8 @@
+     #setSyncState() {
+         const self = this;
+         const layerEditData = self.getLayerEditData();
+-        self.#saveBtn.disabled = !(navigator.onLine && layerEditData && layerEditData.checkedOut) || self.isSyncing;
++        self.#saveBtn.disabled = !(navigator.onLine && layerEditData && layerEditData.checkedOut) ||
++            self.isSyncing || layerEditData.sitmunReconciliationFailed === true;
+     }
+ 
+     #setEditState(enabled) {
+@@ -672,7 +737,8 @@
+         const self = this;
+         self.#setSyncState();
+         const layerEditData = self.getLayerEditData();
+-        self.#discardBtn.disabled = !layerEditData || !layerEditData.checkedOut;
++        self.#discardBtn.disabled = self.isSyncing || layerEditData?.sitmunSyncOutcome === 'unknown' ||
++            !(layerEditData?.checkedOut || layerEditData?.sitmunReconciliationFailed);
+     }
+ 
+     #setChangedState = function (isChanged) {
+@@ -707,7 +773,7 @@
+ 
+     #getStoragePrefix(layer) {
+         const self = this;
+-        return self.LOCAL_STORAGE_KEY_PREFIX + getLayerStoreID(layer || self.layer.wfsLayer || self.layer);
++        return self.LOCAL_STORAGE_KEY_PREFIX + (self.sitmunStorageContext || '') + getLayerStoreID(layer || self.layer.wfsLayer || self.layer);
+     }
+ 
+     #getAddedStoragePrefix(layer) {
+@@ -749,6 +815,7 @@
+ 
+     setLayer(layer) {
+         const self = this;
++        const sitmunAttemptCurrent = self.sitmunCaptureLayerAttempt?.(layer);
+         return new Promise(function (resolve, reject) {
+ 
+             const map = self.map;
+@@ -758,26 +825,32 @@
+             const mapLayer = map.workLayers.find(l => l === layer);
+ 
+             const setNewLayer = function () {
++                if (mapLayer && sitmunAttemptCurrent?.() === false) { resolve(null); return; }
+                 if (mapLayer) {
+                     self.getEditableLayer(mapLayer)
+                         .then(function (editableLayer) {
+                             const endProcess = function () {
++                                if (sitmunAttemptCurrent?.() === false) { resolve(null); return; }
+                                 self.layer = mapLayer;
+                                 self.#enableEditSerialization(mapLayer)
+                                     .then(function () {
+                                         self.getEditControl().then(c => {
++                                            if (sitmunAttemptCurrent?.() === false) { resolve(null); return; }
+                                             selector.value = self.layer.id;
+                                             c.mode = null;
+                                             c.setLayer(editableLayer);
+                                             resolve(self.layer);
+-                                        });
++                                        }).catch(reject);
+                                     })
+                                     .catch((err) => {
++                                        if (sitmunAttemptCurrent?.() === false) { resolve(null); return; }
++                                        if (self.sitmunStorageContext) { reject(err); return; }
+                                         self.setLayer(null);
+                                         reject(err);
+                                     });
+                             };
+ 
++                            if (sitmunAttemptCurrent?.() === false) { resolve(null); return; }
+                             if (map.workLayers.indexOf(editableLayer) >= 0) {
+                                 endProcess();
+                             }
+@@ -786,6 +859,8 @@
+                             }
+                         })
+                         .catch(() => {
++                            if (sitmunAttemptCurrent?.() === false) { resolve(null); return; }
++                            if (self.sitmunStorageContext) { reject(new Error('WFS layer preparation failed')); return; }
+                             self.setLayer(null);
+                             resolve(null);
+                         });
+@@ -807,8 +882,8 @@
+                             })
+                             .finally(() => {
+                                 self.#removingLayer = null;
+-                            });
+-                    });
++                            }).catch(reject);
++                    }).catch(reject);
+                 }
+             };
+ 
+@@ -819,11 +894,13 @@
+                 if (self.layer.wfsLayer) {
+                     self.#removingLayer = self.layer.wfsLayer;
+                 }
+-                self.closeEditSession().then(() => {
+-                    if (mapLayer) {
+-                        setNewLayer();
+-                    }
+-                });
++                const close = self.sitmunCloseLayerTransition
++                    ? self.sitmunCloseLayerTransition(mapLayer, sitmunAttemptCurrent)
++                    : self.closeEditSession();
++                close.then(() => {
++                    if (sitmunAttemptCurrent?.() === false) { resolve(null); return; }
++                    if (mapLayer) setNewLayer();
++                }).catch(reject);
+             }
+         });
+     }
+@@ -834,7 +911,8 @@
+         const layerEditData = self.getLayerEditData();
+         const newFeature = self.#createAuxFeature(feature);
+         layerEditData.addedFeaturesLayer.addFeature(newFeature);
+-        storeFeature(self.#getAddedStoragePrefix() + feature.provId, newFeature).then(function () {
++        self.sitmunTrackDraftWrite(layerEditData,
++            storeFeature(self.#getAddedStoragePrefix() + feature.provId, newFeature)).then(function () {
+             self.#setChangedState(true);
+             //self.map.toast(self.getLocaleString('addOperationSavedInSession'));
+         }, function () {
+@@ -862,21 +940,21 @@
+                     storedFeature = layerEditData.removedFeaturesLayer.getFeatureById(fid);
+                     if (!storedFeature) {
+                         layerEditData.removedFeaturesLayer.addFeature(self.#createAuxFeature(feature));
+-                        storeFeature(removedStoragePrefix + fid, feature).then(storeSuccess, storeFailure);
++                        self.sitmunTrackDraftWrite(layerEditData, storeFeature(removedStoragePrefix + fid, feature))
++                            .then(storeSuccess, storeFailure);
+                     }
+                 }
+                 else {
+                     layerEditData.modifiedFeaturesLayer.removeFeature(storedFeature);
+                     layerEditData.removedFeaturesLayer.addFeature(self.#createAuxFeature(feature));
+-                    deleteFeature(self.#getModifiedStoragePrefix() + fid).then(function () {
+-                        storeSuccess();
+-                        storeFeature(removedStoragePrefix + fid, feature).then(storeSuccess, storeFailure);
+-                    }, storeFailure);
++                    self.sitmunTrackDraftWrite(layerEditData, deleteFeature(self.#getModifiedStoragePrefix() + fid)
++                        .then(() => storeFeature(removedStoragePrefix + fid, feature))).then(storeSuccess, storeFailure);
+                 }
+             }
+             else {
+                 layerEditData.addedFeaturesLayer.removeFeature(storedFeature);
+-                deleteFeature(self.#getAddedStoragePrefix() + fid).then(storeSuccess, storeFailure);
++                self.sitmunTrackDraftWrite(layerEditData, deleteFeature(self.#getAddedStoragePrefix() + fid))
++                    .then(storeSuccess, storeFailure);
+             }
+         }
+     }
+@@ -947,6 +1025,7 @@
+ 
+     async #addAuxLayersToMap(layer) {
+         const self = this;
++        const sitmunAttemptCurrent = self.sitmunCaptureLayerAttempt?.(layer || self.layer);
+         const map = self.map;
+         layer = layer || self.layer;
+         const layerEditData = self.getLayerEditData(layer);
+@@ -959,7 +1038,7 @@
+                     map.off(Consts.event.LAYERUPDATE, onLayerUpdate);
+                 }
+             };
+-            map.on(Consts.event.LAYERUPDATE, onLayerUpdate);
++            if (!layerEditData.sitmunHasBaseline) map.on(Consts.event.LAYERUPDATE, onLayerUpdate);
+             const afLayer = layerEditData.addedFeaturesLayer;
+             const mfLayer = layerEditData.modifiedFeaturesLayer;
+             const rfLayer = layerEditData.removedFeaturesLayer;
+@@ -970,17 +1049,28 @@
+                 map.addLayer(mfLayer),
+                 map.addLayer(rfLayer)
+             ]);
++            if (sitmunAttemptCurrent?.() === false) {
++                await Promise.all([beLayer, afLayer, mfLayer, rfLayer]
++                    .filter(aux => map.workLayers.includes(aux)).map(aux => map.removeLayer(aux)));
++                return;
++            }
+             const editableLayer = await self.getEditableLayer(layer);
++            if (sitmunAttemptCurrent?.() === false) return;
+             let idx = map.layers.indexOf(editableLayer);
+             afLayer.setVisibility(self.highlightsAdded);
+             mfLayer.setVisibility(self.highlightsModified);
+             rfLayer.setVisibility(self.highlightsRemoved);
+             await map.insertLayer(beLayer, ++idx);
++            if (sitmunAttemptCurrent?.() === false) return;
+             const newIdx = idx + 1;
+             map.insertLayer(afLayer, newIdx);
+             map.insertLayer(mfLayer, newIdx);
+             map.insertLayer(rfLayer, newIdx);
+ 
++            if (layerEditData.sitmunHasBaseline) {
++                beLayer.setVisibility(self.showsOriginalFeatures);
++                beLayer.setOpacity(1);
++            }
+             beLayer.setStyles(self.getBeforeEditLayerStyle(editableLayer));
+             afLayer.setStyles(self.getAddedFeaturesLayerStyle(editableLayer));
+             mfLayer.setStyles(self.getModifiedFeaturesLayerStyle(editableLayer));
+@@ -998,6 +1088,7 @@
+ 
+     async openEditSession() {
+         const self = this;
++        const sitmunAttemptCurrent = self.sitmunCaptureLayerAttempt?.(self.layer);
+         if (!self.layer) {
+             throw Error('No layer set for editing');
+         }
+@@ -1020,6 +1111,7 @@
+ 
+         const editControl = await self.getEditControl();
+         const editableLayer = await self.getEditableLayer(self.layer);
++        if (sitmunAttemptCurrent?.() === false) return;
+         editControl.setLayer(editableLayer);
+         switch (layerEditData.geometryType) {
+             case Consts.geom.MULTIPOLYLINE:
+@@ -1062,7 +1154,8 @@
+         const self = this;
+         await self.renderPromise();
+         self.#setChangedState(false);
+-        self.getEditControl().then(c => c.deactivate());
++        const editControl = await self.getEditControl();
++        editControl.deactivate();
+         const layerEditData = self.getLayerEditData();
+         if (layerEditData?.beforeEditLayer) {
+             self.#editingWatch.src = Consts.BLANK_IMAGE;
+@@ -1182,11 +1275,13 @@
+ 
+     #enableEditSerialization(layer) {
+         const self = this;
+-        return new Promise(function (resolve, _reject) {
++        const sitmunAttemptCurrent = self.sitmunCaptureLayerAttempt?.(layer);
++        return new Promise(function (resolve, reject) {
+             self.getEditableLayer(layer)
+                 .then(function (editableLayer) {
+ 
+-                    const endProcess = function () {
++                    const endProcess = async function () {
++                        if (sitmunAttemptCurrent?.() === false) { resolve(null); return; }
+                         const layerEditData = self.getLayerEditData(layer);
+ 
+                         const baseTitle = getLayerTitle(layer);
+@@ -1242,6 +1337,19 @@
+                         }
+ 
+                         const featurePromises = [];
++                        try {
++                            const record = await localforage.getItem('sitmun-wfs-accepted:' + self.#getStoragePrefix(editableLayer));
++                            if (sitmunAttemptCurrent?.() === false) { resolve(null); return; }
++                            if (record != null || layerEditData.sitmunReconciliationFailed) {
++                                self.#sitmunSetOutstanding(layerEditData, record ?? layerEditData.sitmunAcceptedRecord);
++                                self.#setChangesButtonsState();
++                                const unknown = layerEditData.sitmunSyncOutcome === 'unknown';
++                                self.sitmunAttributeSyncState?.(unknown ? 'unknown' : 'reconcileError');
++                                self.sitmunPermissionFailure?.({ reason: unknown ? 'syncUnknown' : 'reconcileFailed' });
++                                resolve(editableLayer);
++                                return;
++                            }
++                        } catch (error) { reject(error); return; }
+                         if (aflIsOld && mflIsOld && rflIsOld) {
+                             // Existen de antes las capas de adiciones, modificaciones y eliminaciones. Leemos de ahí.
+                             removedFeaturesLayer.features.forEach(function (removedFeature) {
+@@ -1263,9 +1371,10 @@
+                                 }
+                             });
+                             Promise.all(featurePromises).then(() => {
++                                if (sitmunAttemptCurrent?.() === false) { resolve(null); return; }
+                                 layerEditData.serializable = true;
+                                 resolve(editableLayer);
+-                            });
++                            }).catch(reject);
+                         }
+                         else {
+                             // Las capas de adiciones, modificaciones y eliminaciones son nuevas. Leemos de local storage.
+@@ -1274,21 +1383,45 @@
+                             const modifiedStoragePrefix = self.#getModifiedStoragePrefix(editableLayer);
+                             const removedStoragePrefix = self.#getRemovedStoragePrefix(editableLayer);
+                             //var li = map.getLoadingIndicator();
+-                            localforage.keys().then(function (keys) {
++                            Promise.resolve(self.sitmunMigrateLegacyDrafts?.(localforage,
++                                self.LOCAL_STORAGE_KEY_PREFIX + getLayerStoreID(editableLayer), storagePrefix,
++                                self.LOCAL_STORAGE_KEY_PREFIX + (self.sitmunPreviousStorageContext || '') +
++                                    getLayerStoreID(editableLayer),
++                                editableLayer.sitmunLegacyUrl ? self.LOCAL_STORAGE_KEY_PREFIX + getLayerStoreID({
++                                    options: { ...editableLayer.options, url: editableLayer.sitmunLegacyUrl }
++                                }) : undefined,
++                                editableLayer.sitmunLegacyUrl ? self.LOCAL_STORAGE_KEY_PREFIX +
++                                    (self.sitmunPreviousStorageContext || '') + getLayerStoreID({
++                                        options: { ...editableLayer.options, url: editableLayer.sitmunLegacyUrl }
++                                    }) : undefined))
++                            .then(function (allowed) {
++                                if (allowed === false) { resolve(null); return null; }
++                                return localforage.keys();
++                            }).then(function (keys) {
++                                if (sitmunAttemptCurrent?.() === false) { resolve(null); return; }
+                                 if (keys) {
+                                     keys
+-                                        .filter(key => key.indexOf(storagePrefix) === 0)
++                                        .filter(key => {
++                                            if (!self.sitmunStorageContext) return key.indexOf(storagePrefix) === 0;
++                                            const recognized = [addedStoragePrefix, modifiedStoragePrefix, removedStoragePrefix]
++                                                .some(prefix => key.startsWith(prefix) && key.length > prefix.length);
++                                            if (!recognized && key.startsWith(storagePrefix)) {
++                                                console.warn('SITMUN: unrecognized scoped WFS draft key ignored');
++                                            }
++                                            return recognized;
++                                        })
+                                         .forEach(function (key) {
+                                             //li && li.addWait(uid);
+-                                            featurePromises.push(new Promise(function (res, _rej) {
++                                            featurePromises.push(new Promise(function (res, rej) {
+                                                 readFeature(key).then(function (obj) {
++                                                    if (sitmunAttemptCurrent?.() === false) { res(null); return; }
+                                                     var id;
+                                                     var k = obj.key;
+                                                     if (k.indexOf(removedStoragePrefix) === 0) {
+                                                         id = k.substr(removedStoragePrefix.length);
+                                                         const feature = editableLayer.getFeatureById(id);
+                                                         editableLayer.removeFeature(feature);
+-                                                        removedFeaturesLayer.addFeature(feature).then(() => res(feature));
++                                                        removedFeaturesLayer.addFeature(feature).then(() => res(feature), rej);
+                                                         //li && li.removeWait(uid);
+                                                     }
+                                                     else if (k.indexOf(modifiedStoragePrefix) === 0) {
+@@ -1299,7 +1432,7 @@
+                                                             feature.setData(obj.feature.attributes);
+                                                             const newFeature = feature.clone();
+                                                             newFeature.setId(feature.id);
+-                                                            modifiedFeaturesLayer.addFeature(newFeature).then(() => res(feature));
++                                                            modifiedFeaturesLayer.addFeature(newFeature).then(() => res(feature), rej);
+                                                             //li && li.removeWait(uid);
+                                                         }
+                                                         else {
+@@ -1331,25 +1464,31 @@
+                                                                 break;
+                                                         }
+                                                         addPromise.then(function (feat) {
++                                                            if (sitmunAttemptCurrent?.() === false) { res(null); return; }
+                                                             //feat.setStyle(Util.extend({}, layer.styles.line, layer.styles.polygon));
+                                                             feat.provId = id;
+                                                             feat.setData(obj.feature.attributes);
+                                                             const newFeat = feat.clone();
+                                                             newFeat.setStyle(null);
+                                                             newFeat.setId(feat.provId);
+-                                                            addedFeaturesLayer.addFeature(newFeat).then(() => res(newFeat));
++                                                            addedFeaturesLayer.addFeature(newFeat).then(() => res(newFeat), rej);
+                                                             //li && li.removeWait(uid);
+-                                                        });
++                                                        }).catch(rej);
+                                                     }
+-                                                });
++                                                    else if (self.sitmunStorageContext) {
++                                                        console.warn('SITMUN: unrecognized scoped WFS draft operation ignored');
++                                                        res(null);
++                                                    }
++                                                }).catch(rej);
+                                             }));
+                                         });
+                                 }
+-                                Promise.all(featurePromises).then(() => {
++                                return Promise.all(featurePromises).then(() => {
++                                    if (sitmunAttemptCurrent?.() === false) { resolve(null); return; }
+                                     layerEditData.serializable = true;
+                                     resolve(editableLayer);
+                                 });
+-                            });
++                            }).catch(reject);
+                         }
+                     };
+ 
+@@ -1370,84 +1509,260 @@
+                     else {
+                         resolve(editableLayer);
+                     }
++                }).catch(reject);
++        });
++    }
++
++    sitmunReconciliationVersion = 1;
++    sitmunSyncOutcomeVersion = 1;
++
++    sitmunSyncOutcomeUnknown() {
++        return this.getLayerEditData()?.sitmunSyncOutcome === 'unknown';
++    }
++
++    sitmunInvalidateSync() {
++        if (!this.isSyncing) return;
++        this.sitmunSyncGeneration++;
++        this.isSyncing = false;
++        this.sitmunAttributeSyncState?.('idle');
++        this.#setChangesButtonsState();
++    }
++
++    #sitmunSetOutstanding(data, record) {
++        const validIds = ids => Array.isArray(ids) && ids.every(id => typeof id === 'string' && id.trim());
++        const accepted = record === true || record?.outcome === 'accepted' &&
++            (record.insertIds === null || validIds(record.insertIds)) &&
++            validIds(record.updatedIds) && validIds(record.deletedIds);
++        data.sitmunAcceptedRecord = accepted ? record : undefined;
++        data.sitmunSyncOutcome = accepted ? 'accepted' : 'unknown';
++        data.sitmunReconciliationFailed = true;
++        data.serializable = true;
++        data.checkedOut = true;
++    }
++
++    sitmunTrackDraftWrite(data, write) {
++        const pending = data.sitmunDraftWrites ??= new Set();
++        pending.add(write);
++        const settled = () => pending.delete(write);
++        write.then(settled, settled);
++        return write;
++    }
++
++    sitmunReconciliationBlocked() {
++        return this.getLayerEditData()?.sitmunReconciliationFailed === true;
++    }
++
++    async applyEdits() {
++        return this.#sitmunSync(false);
++    }
++
++    #sitmunSync(discardAccepted) {
++        const self = this;
++        if (self.isSyncing || self.editControl?.sitmunPendingEditEvents ||
++            (discardAccepted ? self.sitmunSyncOutcomeUnknown() : self.sitmunCanSaveAttributes?.() === false)) return;
++        const layer = self.layer;
++        const data = self.getLayerEditData();
++        if (!layer || !data?.serializable || (data.sitmunReconciliationFailed === true) !== discardAccepted) return;
++        const map = self.map;
++        const edit = self.editControl;
++        const generation = self.sitmunSyncGeneration = (self.sitmunSyncGeneration || 0) + 1;
++        const permissionCurrent = self.sitmunCaptureSyncContext?.(layer);
++        const owns = () => self.map === map && self.layer === layer &&
++            self.sitmunSyncGeneration === generation && self.getLayerEditData() === data;
++        const current = () => owns() && permissionCurrent?.() !== false;
++        self.isSyncing = true;
++        // Keep the public action's native early return, but protect preparation
++        // and await map.wait itself as well as the work it schedules.
++        void (async () => {
++            let accepted = discardAccepted;
++            let complete = false;
++            let failure;
++            try {
++                self.sitmunSyncStarted?.();
++                self.sitmunAttributeSyncState?.('saving');
++                self.#setChangesButtonsState();
++                edit.mode = null;
++                edit.deactivate();
++                await map.wait(async () => {
++                    try {
++                if (data.sitmunDraftWrites?.size) await Promise.all(data.sitmunDraftWrites);
++                if (!current()) return;
++                const added = discardAccepted ? [] : [...data.addedFeaturesLayer.features];
++                const removed = discardAccepted ? [] : [...data.removedFeaturesLayer.features];
++                const originals = new Map();
++                for (const feature of data.beforeEditLayer.features) {
++                    const id = feature.id;
++                    originals.set(id, originals.has(id) ? null : feature);
++                }
++                const candidates = discardAccepted ? [] : [...data.modifiedFeaturesLayer.features];
++                if (candidates.some(feature => feature.id == null || !originals.get(feature.id))) {
++                    throw { reason: 'missingOriginal' };
++                }
++                const modified = candidates.flatMap(feature => {
++                    const original = originals.get(feature.id);
++                    const geometry = Geometry.equals(feature.geometry, original.geometry) ? null : feature.geometry;
++                    const delta = self.sitmunAttributeDelta ? self.sitmunAttributeDelta(feature, original) :
++                        Object.fromEntries(Object.entries(feature.data).filter(([key, value]) =>
++                            (key !== 'id' || edit.layer?.sitmunHasDataId === true) && value !== original.data[key]));
++                    if (geometry === null && Object.keys(delta).length === 0) return [];
++                    const update = new feature.constructor(geometry, { geometryName: data.geometryName });
++                    update.setData(delta);
++                    update.setId(feature.id);
++                    return [update];
+                 });
+-        });
+-    }
+-
+-    async applyEdits() {
+-        const self = this;
+-        if (self.layer) {
+-            const layerEditData = self.getLayerEditData();
+-            if (layerEditData.serializable) {
+-                self.isSyncing = true;
+-                self.#setSyncState();
+-                self.map?.wait(async () => {
+-                    // Copiamos modificadas para ponerle el nombre de atributo de geometría descrito en DescribeFeatureType.
+-                    const modified = layerEditData.modifiedFeaturesLayer.features.map(function (feature) {
+-                        const unmodifiedFeature = layerEditData.beforeEditLayer.features.filter(f => f.id === feature.id)[0];
+-                        let newData;
+-                        let newGeometry;
+-                        if (unmodifiedFeature) {
+-                            newGeometry = Geometry.equals(feature.geometry, unmodifiedFeature.geometry) ?
+-                                null : feature.geometry;
+-                            newData = {};
+-                            for (var key in feature.data) {
+-                                if (key !== 'id') {
+-                                    const oldValue = unmodifiedFeature.data[key];
+-                                    const newValue = feature.data[key];
+-                                    if (oldValue !== newValue) {
+-                                        newData[key] = newValue;
+-                                    }
++
++                const editable = await self.getEditableLayer(layer);
++                if (!current()) return;
++                const storagePrefix = self.#getStoragePrefix(editable);
++                const acceptedKey = 'sitmun-wfs-accepted:' + storagePrefix;
++                let record = discardAccepted ? data.sitmunAcceptedRecord : undefined;
++                const operations = added.length || modified.length || removed.length;
++                const checkUnreserved = async () => {
++                    const existing = await localforage.getItem(acceptedKey);
++                    if (!current()) throw new Error('Stale WFS save');
++                    if (existing != null) {
++                        self.#sitmunSetOutstanding(data, existing);
++                        throw new Error('WFS draft already reserved');
++                    }
++                };
++                if (operations) {
++                    let reserved = false;
++                    const beforeSend = async () => {
++                        if (!current()) throw new Error('Stale WFS save');
++                        if (!navigator.locks) throw new Error('WFS draft protection lock unavailable');
++                        await navigator.locks.request(acceptedKey, { ifAvailable: true }, async lock => {
++                            if (!lock) throw new Error('WFS draft protection lock busy');
++                            await checkUnreserved();
++                            if (!current()) throw new Error('Stale WFS save');
++                            await localforage.setItem(acceptedKey, { outcome: 'pending' });
++                            reserved = true;
++                        });
++                    };
++                    let response;
++                    try {
++                        response = await editable.applyEdits(added, modified, removed, { current, beforeSend });
++                    } catch (error) {
++                        if (reserved) {
++                            if (['notSent', 'rejected', 'permission'].includes(error?.outcome)) {
++                                try { await localforage.removeItem(acceptedKey); }
++                                catch {
++                                    if (current()) self.#sitmunSetOutstanding(data, null);
++                                    throw { reason: 'syncUnknown' };
+                                 }
+-                            }
++                            } else if (current()) self.#sitmunSetOutstanding(data, null);
+                         }
+-                        else {
+-                            newGeometry = feature.geometry;
+-                            newData = feature.data;
+-                        }
+-                        const result = new feature.constructor(newGeometry, { geometryName: layerEditData.geometryName });
+-                        result.setData(newData);
+-                        result.setId(feature.id);
+-                        return result;
++                        throw error;
++                    }
++                    accepted = true;
++                    const ids = response?.insertIds ?? [];
++                    const insertIds = Array.isArray(ids) && ids.length === added.length &&
++                        new Set(ids.map(String)).size === added.length &&
++                        ids.every(id => typeof id === 'string' && id.trim()) ? ids : null;
++                    record = { outcome: 'accepted', insertIds,
++                        updatedIds: modified.map(f => String(f.id)), deletedIds: removed.map(f => String(f.id)) };
++                    if (current()) self.#sitmunSetOutstanding(data, record);
++                    await localforage.setItem(acceptedKey, record);
++                    if (!current()) return;
++                } else if (!accepted) await checkUnreserved();
++                if (accepted || candidates.length) {
++                    const features = await editable.wrap.sitmunReadWfsFeatures();
++                    if (!current()) return;
++                    const loaded = new Set(features.map(f => String(f.id)));
++                    if (record?.insertIds === null ||
++                        [...(record?.insertIds ?? []), ...(record?.updatedIds ?? [])].some(id => !loaded.has(String(id))) ||
++                        (record?.deletedIds ?? []).some(id => loaded.has(String(id)))) {
++                        throw new Error('WFS transaction not visible in the editable read scope');
++                    }
++                    const baseline = features.map(feature => {
++                        const copy = feature.clone();
++                        copy.setId(feature.id);
++                        copy.setData(structuredClone(feature.getData()));
++                        return copy;
+                     });
+-                    const editableLayer = await self.getEditableLayer(self.layer);
+-                    try {
+-                        await editableLayer.applyEdits(layerEditData.addedFeaturesLayer.features, modified, layerEditData.removedFeaturesLayer.features);
+-                        if (self.layer.type === Consts.layerType.WMS) {
+-                            self.layer.refresh();
+-                        }
+-                        layerEditData.beforeEditLayer.clearFeatures();
+-                        editableLayer.features.forEach(f => {
+-                            const beLayerFeatures = layerEditData.beforeEditLayer.features;
+-                            beLayerFeatures[beLayerFeatures.length] = f.clone();
+-                        });
+-                        await self.deleteCache(self.#getStoragePrefix());
+-                        const endProcess = function () {
+-                            self.isSyncing = false;
+-                            // Las acciones a realizar a partir de este punto son las mismas que al descartar una edición
+-                            self.discardEdits();
+-                            self.map.toast(self.getLocaleString('changesSuccessfullySyncedWithServer'), { type: Consts.msgType.INFO });
+-                        };
+-                        try {
+-                            await self.cacheLayer(editableLayer);
+-                            endProcess();
+-                        }
+-                        catch (e) {
+-                            endProcess();
+-                        }
+-                    }
+-                    catch (obj) {
+-                        self.isSyncing = false;
+-                        self.#setSyncState();
+-                        TC.error(self.getLocaleString('errorSyncingChanges', { code: obj.code, reason: obj.reason }), [Consts.msgErrorMode.TOAST, Consts.msgErrorMode.CONSOLE]);
+-                    }
++                    const publishEditable = editable.wrap.sitmunPrepareFeatureSnapshot(features);
++                    const publishBaseline = data.beforeEditLayer.wrap.sitmunPrepareFeatureSnapshot(baseline);
++                    edit.setSelectedFeatures([]);
++                    edit.history.sitmunReset();
++                    edit.modifyControl?.sitmunResetDeletedFeatures();
++                    publishEditable();
++                    publishBaseline();
++                    data.sitmunHasBaseline = true;
++                    edit.modifyControl?.setSelectableState(features.length > 0);
++                    data.beforeEditLayer.setOpacity(1);
++                    data.beforeEditLayer.setVisibility(self.showsOriginalFeatures);
++                }
++                const keys = await localforage.keys();
++                if (!current()) return;
++                // Remove only operation keys belonging to the captured session.
++                const prefixes = [self.#getAddedStoragePrefix(editable), self.#getModifiedStoragePrefix(editable),
++                    self.#getRemovedStoragePrefix(editable)];
++                await Promise.all(keys.filter(key => prefixes.some(prefix => key.startsWith(prefix)))
++                    .map(key => localforage.removeItem(key)));
++                if (!current()) return;
++                if (accepted) await localforage.removeItem(acceptedKey);
++                if (!current()) return;
++                data.addedFeaturesLayer.clearFeatures();
++                data.modifiedFeaturesLayer.clearFeatures();
++                data.removedFeaturesLayer.clearFeatures();
++                data.sitmunReconciliationFailed = false;
++                data.sitmunSyncOutcome = undefined;
++                data.sitmunAcceptedRecord = undefined;
++                self.#setChangedState(false);
++                complete = true;
++                if (accepted && layer.type === Consts.layerType.WMS) {
++                    Promise.resolve().then(() => { if (current()) return layer.refresh(); }).catch(console.warn);
++                }
++                if (accepted) {
++                    // Service-worker cache is optional, unlike the scoped draft store.
++                    const refreshCache = async () => {
++                        await self.deleteCache(storagePrefix);
++                        if (current()) await self.cacheLayer(editable);
++                    };
++                    refreshCache().catch(console.warn);
++                }
++                } catch (error) {
++                    const unknown = data.sitmunSyncOutcome === 'unknown';
++                    failure = unknown ? { reason: 'syncUnknown', cause: error } :
++                        accepted || data.sitmunSyncOutcome === 'accepted' ? { reason: 'reconcileFailed', cause: error } :
++                        error?.stage || error?.reason === 'missingOriginal' ? error :
++                        { stage: 'preparation', outcome: 'notSent', reason: error?.message, cause: error };
++                }
+                 });
+-            }
+-        }
++            } catch (error) {
++                const unknown = data.sitmunSyncOutcome === 'unknown';
++                failure = unknown ? { reason: 'syncUnknown', cause: error } :
++                    accepted || data.sitmunSyncOutcome === 'accepted' ? { reason: 'reconcileFailed', cause: error } :
++                    error?.stage || error?.reason === 'missingOriginal' ? error :
++                    { stage: 'preparation', outcome: 'notSent', reason: error?.message, cause: error };
++            } finally {
++                if (!owns()) return;
++                self.isSyncing = false;
++                const report = () => {
++                    if (!current()) {
++                        self.sitmunAttributeSyncState?.('idle');
++                        return;
++                    }
++                    const state = complete ? 'success' : data.sitmunSyncOutcome === 'unknown' ? 'unknown' :
++                        data.sitmunSyncOutcome === 'accepted' ? 'reconcileError' : 'error';
++                    self.sitmunAttributeSyncState?.(state, failure?.reason);
++                    if (failure) {
++                        if (self.sitmunPermissionFailure) self.sitmunPermissionFailure(failure);
++                        else TC.error(self.getLocaleString('errorSyncingChanges', { code: failure.code, reason: failure.reason }),
++                            [Consts.msgErrorMode.TOAST, Consts.msgErrorMode.CONSOLE]);
++                    }
++                    if (complete && accepted && !discardAccepted) {
++                        map.toast(self.getLocaleString('changesSuccessfullySyncedWithServer'), { type: Consts.msgType.INFO });
++                    }
++                };
++                try { self.#setChangesButtonsState(); }
++                finally { report(); }
++            }
++        })().catch(console.warn);
+     }
+ 
+     discardEdits() {
+         const self = this;
++        if (self.isSyncing || self.sitmunReconciliationBlocked()) return;
+         var storagePrefix = self.#getStoragePrefix();
+         localforage.keys().then(function (keys) {
+             if (keys) {
+@@ -1612,4 +1927,4 @@
+ 
+ WFSEdit.prototype.CLASS = 'tc-ctl-wfsedit';
+ TC.control.WFSEdit = WFSEdit;
+-export default WFSEdit;
+\ No newline at end of file
++export default WFSEdit;
+diff --git a/TC/ol/Draw.js b/TC/ol/Draw.js
+--- a/TC/ol/Draw.js
++++ b/TC/ol/Draw.js
+@@ -210,6 +210,7 @@
+ 
+     activate(mode) {
+         var self = this;
++        const permissionCurrent = self.parent.sitmunCaptureEditingPermission?.();
+ 
+         var type;
+         switch (mode) {
+@@ -239,6 +240,7 @@
+                 const layer = objects[1];
+                 if (layer) {
+                     layer.wrap.getLayer().then(function (olLayer) {
++                        if (permissionCurrent?.() === false) return;
+ 
+                         if (!self.viewport) self.viewport = olMap.getViewport();
+ 
+@@ -377,6 +379,7 @@
+                             }, this);
+ 
+                             self.interaction.on('drawend', function (evt) {
++                                if (permissionCurrent?.() === false) return;
+ 
+                                 //if (!evt.feature.getStyle()) {
+                                 //    const featureStyleOptions = getStyleOptionsFromMode(self.parent.mode, self.parent.getStyle());
+@@ -386,6 +389,7 @@
+                                     self.parent.trigger(Consts.event.MEASURE, self.getMeasureData());
+                                 }
+                                 const endFn = function (feat) {
++                                    if (permissionCurrent?.() === false) return;
+                                     self.parent.dispatchEvent(new ControlEvent(ControlEvent.type.DRAWEND, { feature: feat }));
+                                     self.sketch = null;
+                                     self.interaction.setActive(true);
+@@ -790,4 +794,4 @@
+         }
+     }
+ 
+-}
+\ No newline at end of file
++}
+diff --git a/TC/ol/Modify.js b/TC/ol/Modify.js
+--- a/TC/ol/Modify.js
++++ b/TC/ol/Modify.js
+@@ -11,8 +11,10 @@
+ export default class ModifyWrapper extends ControlWrapper {
+     activate() {
+         const self = this;
++        const permissionCurrent = self.parent.sitmunCaptureEditingPermission?.();
+         if (self.parent.map) {
+             Promise.all([self.parent.map.wrap.getMap(), self.parent.layer.wrap.getLayer()]).then(function ([olMap, olLayer]) {
++                if (permissionCurrent?.() === false) return;
+                 const deleteMode = self.parent.mode === self.parent.constructor.mode.VERTEX_DELETE;
+                 const selectOptions = {
+                     layers: [olLayer],
+diff --git a/TC/ol/layer/Vector.js b/TC/ol/layer/Vector.js
+--- a/TC/ol/layer/Vector.js
++++ b/TC/ol/layer/Vector.js
+@@ -165,7 +165,36 @@
+         layerOptions.source.addFeatures(oldFeatures);
+     }
+ 
+-    createVectorSource(options, nativeStyle) {
++    sitmunReadWfsFeatures() {
++        const self = this;
++        let timeout;
++        return new Promise((resolve, reject) => {
++            timeout = setTimeout(() => reject(new Error('WFS reload timed out')), 30000);
++            const view = self.parent.map.wrap.map.getView();
++            const { source } = self.createVectorSource(
++                { ...self.parent.options, type: Consts.layerType.WFS, filter: self.parent.filter ?? self.parent.options.filter,
++                    urls: undefined, data: undefined, cluster: null, features: undefined }, null, { resolve, reject });
++            source.loadFeatures(view.calculateExtent(), view.getResolution(), view.getProjection());
++        }).finally(() => clearTimeout(timeout));
++    }
++
++    // Prepare local sources without a second request, then publish synchronously.
++    sitmunPrepareFeatureSnapshot(features) {
++        const self = this;
++        const options = { ...self.parent.options, type: Consts.layerType.VECTOR,
++            url: undefined, urls: undefined, data: undefined, features };
++        const { source } = self.createVectorSource(options, self.createStyles(self.parent));
++        return () => {
++            self.parent.clearFeatures();
++            for (const feature of features) {
++                feature.layer = self.parent;
++                self.parent.features.push(feature);
++            }
++            self.layer.setSource(source);
++        };
++    }
++
++    createVectorSource(options, nativeStyle, sitmunRead) {
+         const self = this;
+ 
+         var createGenericLoader = function (url, format) {
+@@ -327,17 +356,55 @@
+                 loader: function (_extent, _resolution, projection) {
+                     var sOrigin = this;
+                     var serviceUrl = options.url;
++                    if (!serviceUrl && sitmunRead) sitmunRead.reject(new Error('WFS URL unavailable'));
+                     if (serviceUrl) {
+-                        self.parent.state = SitnaLayer.state.LOADING;
+-                        self.parent.map.dispatchEvent(new LayerEvent(Consts.event.BEFORELAYERUPDATE, {
+-                            layer: self.parent
+-                        }));
++                        if (!sitmunRead) {
++                            self.parent.state = SitnaLayer.state.LOADING;
++                            self.parent.map.dispatchEvent(new LayerEvent(Consts.event.BEFORELAYERUPDATE, {
++                                layer: self.parent
++                            }));
++                        }
+ 
+                         const isFilterText = function () {
+                             return typeof options.properties === "string";
+                         };
+                         const manageResponse = (response) => {
+                             const data = response.data;
++                            if (sitmunRead) {
++                                // XML exception reports can parse as zero features. Only a
++                                // real collection counts as an empty successful WFS read.
++                                const root = data?.documentElement;
++                                if (data?.type !== 'FeatureCollection' &&
++                                    (root?.localName !== 'FeatureCollection' ||
++                                     !['http://www.opengis.net/wfs', 'http://www.opengis.net/wfs/2.0'].includes(root.namespaceURI))) {
++                                    throw new Error('Invalid WFS feature collection');
++                                }
++                                const parsed = outputFormat.readFeatures(data);
++                                const reported = data?.type === 'FeatureCollection' ? data.features?.length :
++                                    (root.getAttribute('numberReturned') ?? root.getAttribute('numberOfFeatures'));
++                                if (reported != null && Number(reported) !== parsed.length) {
++                                    throw new Error('Incomplete WFS feature collection');
++                                }
++                                const ids = new Set();
++                                const features = parsed.map(native => {
++                                    const fid = native.getId();
++                                    if (fid == null || !String(fid).trim() || ids.has(String(fid)) || !native.getGeometry()) {
++                                        throw new Error('Invalid WFS feature identity or geometry');
++                                    }
++                                    ids.add(String(fid));
++                                    const feature = TC.wrap.Feature.createFeature(native);
++                                    if (feature.id !== fid) throw new Error('WFS feature identity was not preserved');
++                                    return feature;
++                                });
++                                sitmunRead.resolve(features);
++                                return;
++                            }
++                            // A source replaced in the meantime must not populate the
++                            // current layer's SITNA feature array.
++                            if (self.layer && options.type === Consts.layerType.WFS) {
++                                const currentSource = self.layer.getSource();
++                                if (currentSource !== sOrigin && currentSource?.getSource?.() !== sOrigin) return;
++                            }
+                             let feats;
+                             try {
+                                 feats = outputFormat.readFeatures(data);
+@@ -366,6 +433,7 @@
+                             self.parent.state = SitnaLayer.state.IDLE;
+                         };
+                         const manageError = (error) => {
++                            if (sitmunRead) { sitmunRead.reject(error); return; }
+                             if (error instanceof XMLDocument) {
+                                 self.parent.map.dispatchEvent(new LayerEvent(Consts.event.LAYERERROR, { layer: self.parent, message: error.querySelector("ExceptionText").innerHTML }));
+                             }
+@@ -475,9 +543,10 @@
+                                     }
+                                 }
+ 
+-                                let prefix = options.featurePrefix ?? options.featureNS ?? "";
+-                                if (prefix.length) prefix = prefix + ":";
+-                                _ajaxOptions.data["typename" + (version === "2.0.0" ? "s" : "")] = prefix + options.featureType;
++                                const prefix = options.featurePrefix ??
++                                    (capabilities['xmlns:' + options.featureNS] ? options.featureNS : '');
++                                _ajaxOptions.data["typename" + (version === "2.0.0" ? "s" : "")] = featureType
++                                    .map(type => prefix && !type.includes(':') ? `${prefix}:${type}` : type).join(',');
+                                 if (onlyHits)
+                                     _ajaxOptions.data = Object.assign(_ajaxOptions.data, {
+                                         resultType: "hits"
+@@ -498,7 +567,7 @@
+                                 if (options.filter instanceof TC.filter.Filter)
+                                     _ajaxOptions.data = Util.WFSQueryBuilder(featureType, options.filter, capabilities, onlyHits ? null : options.outputFormat, onlyHits, crs, options.maxFeatures);
+                                 else if (options.filter instanceof GMLFilter) {
+-                                    ajaxOptions.data = options.filter.getGeatureText({
++                                    _ajaxOptions.data = options.filter.getGeatureText({
+                                         outputFormat: options.outputFormat,
+                                         srsName: crs,
+                                         version: version,
+@@ -530,6 +599,7 @@
+                                     break;
+                             }
+                             ajaxOptions.contentType = Consts.mimeType.XML;
++                            if (sitmunRead) ajaxOptions.cache = false;
+                             return TC.ajax(ajaxOptions);
+                         };
+ 
+@@ -549,15 +619,18 @@
+                                     }
+                                     var firstNode = response.data.children[0];
+                                     if (firstNode.tagName.toLowerCase().indexOf("exception") >= 0) {
++                                        if (sitmunRead) throw new Error('WFS hits request failed');
+                                         self.parent.map.dispatchEvent(new LayerEvent(Consts.event.LAYERERROR, { layer: self.parent, message: firstNode.querySelector("ExceptionText").innerHTML }));
+                                     }
+                                     else if (firstNode.tagName.toLowerCase().indexOf("featurecollection") >= 0) {
+                                         let numOfFeaturesFounded = parseInt((firstNode.attributes.numberMatched || firstNode.attributes.numberOfFeatures).value, 10);
+                                         if (Number.isNaN(numOfFeaturesFounded) || numOfFeaturesFounded >= parseInt(numMaxFeatures, 10)) {
++                                            if (sitmunRead) throw new Error('WFS feature limit or invalid hit count');
+                                             self.parent.map.dispatchEvent(new LayerEvent(Consts.event.LAYERERROR, { layer: self.parent, message: Consts.WFSErrors.MAX_NUM_FEATURES, data: { limit: parseInt(numMaxFeatures, 10), founded: numOfFeaturesFounded } }));
+                                             return;
+                                         }
+                                         else if (!Number.isNaN(numOfFeaturesFounded) && numOfFeaturesFounded === 0) {
++                                            if (sitmunRead) { sitmunRead.resolve([]); return; }
+                                             //si no encuentra nada. LLamo a la función para 
+                                             manageResponse({
+                                                 data: outputFormat instanceof GeoJSON ? { "type": "FeatureCollection", "totalFeatures": 0, "features": [], "crs": null } : outputFormat.writeFeatures([])
+@@ -566,13 +639,14 @@
+                                         }
+                                         makeAjaxCall(false, capabilities).then(manageResponse).catch(manageError);
+                                     }
++                                    else if (sitmunRead) throw new Error('Invalid WFS hits response');
+                                 }).catch(manageError);
+                             }
+                             else {
+                                 makeAjaxCall(false, capabilities).then(manageResponse).catch(manageError);
+                             }
+-                        });
+-                        self._requestUrl = serviceUrl;
++                        }).catch(manageError);
++                        if (!sitmunRead) self._requestUrl = serviceUrl;
+                     }
+                 },
+                 //strategy: ol.loadingstrategy.all(),
+@@ -1119,68 +1193,147 @@
+         return this._requestUrl;
+     }
+ 
+-    sendTransaction(inserts, updates, deletes) {
++    sitmunAttributeTransactionVersion = 2;
++
++    async sendTransaction(inserts, updates, deletes, sync) {
+         const self = this;
+-        const getNativeFeature = function (feat) {
+-            return feat.wrap.feature;
++        if (!inserts.length && !updates.length && !deletes.length) return self.parent;
++        let stage = 'preparation';
++        let outcome = 'notSent';
++        let timeout;
++        const bounded = async (operation, ms, onTimeout) => {
++            try {
++                return await Promise.race([operation(), new Promise((_, reject) => {
++                    timeout = setTimeout(() => {
++                        reject(new Error('WFS ' + stage + ' timed out'));
++                        onTimeout?.();
++                    }, ms);
++                })]);
++            } finally { clearTimeout(timeout); }
+         };
+-        return new Promise(function (resolve, reject) {
+-            const olInserts = inserts.map(getNativeFeature);
+-            const olUpdates = updates.map(getNativeFeature);
+-            const olDeletes = deletes.map(getNativeFeature);
+-            if (inserts.length || updates.length || deletes.length) {
+-                self.getLayer().then(function () {
+-                    var format = new WFS();
+-                    var options = self.parent.options;
+-                    var transaction = format.writeTransaction(olInserts, olUpdates, olDeletes, {
+-                        featurePrefix: options.featurePrefix,
+-                        featureNS: options.featureNS,
+-                        featureType: options.featureType[0]
+-                    });
+-                    var ajaxOptions = {
+-                        url: self.parent.url,
+-                        method: 'POST',
+-                        contentType: Consts.mimeType.XML,
+-                        responseType: Consts.mimeType.XML,
+-                        data: transaction.outerHTML
+-                    };
+-                    TC.ajax(ajaxOptions)
+-                        .then(function (response) {
+-                            const data = response.data;
+-                            const ns = 'http://www.opengis.net/ows';
+-                            var er = data.getElementsByTagNameNS(ns, 'ExceptionReport')[0];
+-                            var errorObj = {
+-                                reason: ''
+-                            };
+-                            if (er) {
+-                                var e = er.getElementsByTagNameNS(ns, 'Exception')[0];
+-                                if (e) {
+-                                    errorObj.code = e.getAttribute('exceptionCode');
+-                                    var texts = e.getElementsByTagNameNS(ns, 'ExceptionText');
+-                                    for (var i = 0, len = texts.length; i < len; i++) {
+-                                        errorObj.reason += '\n' + texts[i].innerHTML;
+-                                    }
+-                                }
+-                                reject(errorObj);
+-                            }
+-                            else {
+-                                var transactionResponse = format.readTransactionResponse(data);
+-                                resolve(transactionResponse);
+-                            }
+-                        })
+-                        .catch(function (err) {
+-                            const errObj = {
+-                                code: err.status || '',
+-                                reason: err.msg || 'unknown'
+-                            };
+-                            reject(errObj);
+-                        });
+-                });
+-            }
+-            else {
+-                resolve(self.parent);
+-            }
+-        });
++        const rejectionCode = data => {
++            const root = data?.documentElement;
++            let code;
++            if (root?.localName === 'ExceptionReport' && [
++                'http://www.opengis.net/ows', 'http://www.opengis.net/ows/1.1', 'http://www.opengis.net/ows/2.0'
++            ].includes(root.namespaceURI)) {
++                code = root.getElementsByTagNameNS(root.namespaceURI, 'Exception')[0]?.getAttribute('exceptionCode');
++            } else if (root?.localName === 'ServiceExceptionReport' && root.namespaceURI === 'http://www.opengis.net/ogc') {
++                code = root.getElementsByTagNameNS(root.namespaceURI, 'ServiceException')[0]?.getAttribute('code');
++            }
++            // A generic processing/timeout exception does not prove no commit occurred.
++            return ['InvalidParameterValue', 'MissingParameterValue', 'InvalidValue', 'InvalidPropertyValue',
++                'OperationNotSupported', 'OperationParsingFailed', 'InvalidLockId', 'LockHasExpired',
++                'VersionNegotiationFailed', 'NoSuchFeatureType'].includes(code) ? code : undefined;
++        };
++        try {
++            if (self.parent.sitmunRequiresDraftProtection && !sync) throw new Error('Scoped WFS draft protection unavailable');
++            await bounded(() => self.getLayer(), 10000);
++            const native = feature => feature.wrap.feature;
++            const olInserts = inserts.map(native);
++            const olUpdates = updates.map(feature => {
++                const original = native(feature);
++                const copy = original.clone();
++                copy.setId(original.getId());
++                copy.unset('gml:boundedBy', true);
++                return copy;
++            });
++            const olDeletes = deletes.map(native);
++            let geometryName;
++            if (olInserts.length) {
++                const metadata = await bounded(() => self.parent.getFeatureTypeMetadata(), 10000);
++                geometryName = metadata?.geometries?.length === 1 && metadata.geometries[0].name;
++                if (!geometryName || geometryName.includes(':')) throw new Error('WFS geometry is missing or ambiguous in DescribeFeatureType');
++            }
++            const serialize = await self.parent.sitmunLoadAttributeTransaction?.(olInserts, olUpdates, geometryName);
++            if (olInserts.length && !serialize) throw new Error('Verified WFS insert schema unavailable');
++            const transactionInserts = olInserts.map(feature => {
++                const geometry = feature.getGeometry();
++                if (!geometry) throw new Error('WFS insert geometry unavailable');
++                // No attributes or provisional fid go through the native GML feature writer.
++                const copy = new feature.constructor();
++                copy.setGeometryName(geometryName);
++                copy.setGeometry(geometry.clone());
++                return copy;
++            });
++            const options = self.parent.options;
++            const configuredType = Array.isArray(options.featureType) ? options.featureType[0] : options.featureType;
++            const separator = configuredType.indexOf(':');
++            const declarations = self.parent.capabilities ?? {};
++            const namespaceOption = options.featureNS;
++            const optionUri = namespaceOption && declarations['xmlns:' + namespaceOption];
++            const featurePrefix = separator >= 0 ? configuredType.substring(0, separator) :
++                options.featurePrefix || (optionUri ? namespaceOption : undefined);
++            const featureNS = declarations['xmlns:' + featurePrefix] || optionUri || namespaceOption;
++            if (!featurePrefix || !featureNS) throw new Error('WFS transaction feature type namespace unavailable');
++            stage = 'serialization';
++            const format = new WFS();
++            const transaction = format.writeTransaction(transactionInserts, olUpdates, olDeletes, {
++                featurePrefix, featureNS, srsName: self.parent.map?.crs,
++                featureType: separator < 0 && featurePrefix ? featurePrefix + ':' + configuredType : configuredType
++            });
++            serialize?.(transaction, olInserts, olUpdates, geometryName);
++            self.parent.sitmunPrepareAttributeTransaction?.(transaction);
++            const dataToSend = transaction.outerHTML;
++            const abort = new AbortController();
++            stage = 'preparation';
++            await sync?.beforeSend();
++            // No asynchronous work between this check and the start of the transport.
++            if (sync?.current() === false) throw new Error('Stale WFS save');
++            stage = 'post';
++            outcome = 'unknown';
++            const { data } = await bounded(() => TC.ajax({
++                url: self.parent.url, method: 'POST', contentType: Consts.mimeType.XML,
++                responseType: Consts.mimeType.XML, sitmunWfsAttributeErrors: true, signal: abort.signal, data: dataToSend
++            }), 30000, () => abort.abort());
++            stage = 'response';
++            const code = rejectionCode(data);
++            if (code) throw { outcome: 'rejected', code, reason: 'WFS transaction rejected' };
++            const root = data?.documentElement;
++            const ns = root?.namespaceURI;
++            const children = (node, name) => [...node.children].filter(child => child.namespaceURI === ns && child.localName === name);
++            if (root?.localName !== 'TransactionResponse' || !['http://www.opengis.net/wfs', 'http://www.opengis.net/wfs/2.0'].includes(ns)) {
++                throw new Error('Unverified WFS transaction response');
++            }
++            const summary = children(root, 'TransactionSummary');
++            if (summary.length !== 1 || [
++                ['totalInserted', olInserts.length], ['totalUpdated', olUpdates.length], ['totalDeleted', olDeletes.length]
++            ].some(([name, expected]) => {
++                const nodes = children(summary[0], name);
++                const count = nodes.length === 0 ? '0' : nodes[0].textContent.trim();
++                return nodes.length > 1 || !/^\d+$/.test(count) || Number(count) !== expected;
++            })) throw new Error('Unverified WFS transaction response');
++
++            // The validated totals prove acceptance even if the native ID parser fails.
++            const result = { insertIds: [] };
++            try {
++                Object.assign(result, format.readTransactionResponse(data));
++                const insertResults = children(root, 'InsertResults')[0];
++                if (ns === 'http://www.opengis.net/wfs/2.0' && insertResults && !result.insertIds?.length) {
++                    result.insertIds = Array.from(insertResults.getElementsByTagNameNS('http://www.opengis.net/fes/2.0', 'ResourceId'),
++                        node => node.getAttribute('rid'));
++                }
++            } catch { /* Reconciliation must not invent persistent identifiers. */ }
++            if (olInserts.length === 0) result.insertIds = [];
++            else if (Array.isArray(result.insertIds)) {
++                result.insertIds = result.insertIds.map(id => id === 'none' ? null : id);
++            }
++            return result;
++        } catch (error) {
++            const status = error?.status;
++            const problem = error?.problem;
++            const code = outcome === 'unknown' ? rejectionCode(error?.wfsException) : undefined;
++            const proxyDenied = outcome === 'unknown' && [401, 403].includes(status) &&
++                problem?.status === status && problem.instance === '/proxy' &&
++                ['backend-config', 'proxy-request'].includes(problem.properties?.origin);
++            throw {
++                stage, outcome: error?.outcome ?? (proxyDenied
++                    ? problem.type === 'https://sitmun.org/problems/wfs-attribute-forbidden' ? 'rejected' : 'permission'
++                    : code ? 'rejected' : outcome),
++                code: error?.code ?? code ?? status, status, problem, attributes: error?.attributes,
++                reason: error?.reason ?? error?.message ?? error?.msg ?? 'WFS transaction failed'
++            };
++        }
+     }
+ 
+     setDraggable(draggable, onend, onstart) {
+@@ -1264,4 +1417,4 @@
+         }
+         return result;
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/TC/tool/FeatureHistory.js b/TC/tool/FeatureHistory.js
+--- a/TC/tool/FeatureHistory.js
++++ b/TC/tool/FeatureHistory.js
+@@ -10,6 +10,10 @@
+     }
+ 
+     #historyStacks = new Map();
++
++    sitmunReset() {
++        this.#historyStacks.clear();
++    }
+ 
+     pushHistory(feature, action) {
+         let historyStacks = this.#historyStacks.get(feature);
+diff --git a/TC/tool/FeatureTypeParser.js b/TC/tool/FeatureTypeParser.js
+--- a/TC/tool/FeatureTypeParser.js
++++ b/TC/tool/FeatureTypeParser.js
+@@ -30,11 +30,13 @@
+ 
+     async #requestSchema(worker, url) {
+         const { default: xsdDictionary } = await import('./xsdDocuments.mjs');
+-        if (xsdDictionary.has(url)) {
++        const gmlPath = new URL(url).pathname.match(/\/schemas\/(gml\/.+)$/)?.[1];
++        const schema = xsdDictionary.get(url) ?? (gmlPath && xsdDictionary.get('http://schemas.opengis.net/' + gmlPath));
++        if (schema) {
+             worker.postMessage({
+                 type: 'getSchema',
+                 url,
+-                xml: xsdDictionary.get(url)
++                xml: schema
+             });
+         }
+         else {
