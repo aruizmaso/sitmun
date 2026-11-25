@@ -15,6 +15,7 @@ on:
       - 'sitmun-backend/src/main/resources/db/changelog/**'
       - 'tools/bin/check_changelog_immutability.py'
       - 'tools/tests/test_changelog_immutability.py'
+      - 'tools/tests/test_changelog_logical_paths.py'
       - '.github/workflows/liquibase-immutability.yml'
   workflow_dispatch:
 
@@ -24,17 +25,20 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
       - name: Unit tests
         run: python3 tools/tests/test_changelog_immutability.py
+
+      - name: Every changeset names its logical path
+        run: python3 tools/tests/test_changelog_logical_paths.py
 
       - name: Fetch PR base
         if: github.event_name == 'pull_request'

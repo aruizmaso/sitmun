@@ -17,6 +17,8 @@ on:
       - 'sitmun-backend/src/main/resources/db/changelog/**'
       - 'tools/tests/test_liquibase_1.2.7_to_head_upgrade.sh'
       - 'tools/tests/test_liquibase_upgrade_from_1.2.9.sh'
+      - 'tools/tests/test_liquibase_upgrade_from_1.3.0.sh'
+      - 'sitmun-backend/src/test/resources/db/databasechangelog/**'
       - 'tools/tests/test_prepare_extracted_liquibase.py'
       - 'tools/bin/prepare_extracted_liquibase.py'
       - '.github/workflows/liquibase-upgrade.yml'
@@ -46,7 +48,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Extracted-tree helper unit tests
         run: python3 tools/tests/test_prepare_extracted_liquibase.py
@@ -58,12 +60,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version-file: .java-version
@@ -74,6 +76,10 @@ jobs:
           git fetch --no-tags origin tag legacy/sitmun-application-stack/sitmun-application-stack/1.2.9
       - name: Upgrade 1.2.9 to the shipped master
         run: bash tools/tests/test_liquibase_upgrade_from_1.2.9.sh postgres-12
+      - name: Upgrade 1.2.9 seeded by the Liquibase 4.29 CLI
+        env:
+          SITMUN_SOURCE_LIQUIBASE: '4.29'
+        run: bash tools/tests/test_liquibase_upgrade_from_1.2.9.sh postgres-12
 
   postgres-16-from:
     name: Upgrade PostgreSQL 16 from 1.2.9
@@ -82,12 +88,12 @@ jobs:
     timeout-minutes: 70
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version-file: .java-version
@@ -100,11 +106,11 @@ jobs:
         env:
           SITMUN_UPGRADE_KEEP_DB: "1"
         run: bash tools/tests/test_liquibase_upgrade_from_1.2.9.sh postgres-16
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           version: 12.15.0
       - name: Set up Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -118,7 +124,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Cache Playwright browsers
         id: playwright-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/ms-playwright
           key: ${{ runner.os }}-playwright-${{ steps.playwright-version.outputs.version }}
@@ -134,7 +140,7 @@ jobs:
         run: pnpm run e2e
       - name: Upload Playwright artifacts
         if: failure()
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: playwright-admin-upgraded-artifacts
           path: |
@@ -154,12 +160,12 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version-file: .java-version
@@ -178,12 +184,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version-file: .java-version
@@ -202,12 +208,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version-file: .java-version
@@ -226,12 +232,12 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version-file: .java-version
@@ -250,12 +256,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version-file: .java-version
@@ -274,12 +280,12 @@ jobs:
     timeout-minutes: 90
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
       - name: Set up Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version-file: .java-version
@@ -291,6 +297,60 @@ jobs:
       - name: Upgrade 1.2.8 to the shipped master
         run: bash tools/tests/test_liquibase_upgrade_from_1.2.9.sh oracle-21 1.2.8
 
+  postgres-12-from-130:
+    name: Upgrade PostgreSQL 12 from 1.3.0
+    if: github.event_name != 'workflow_dispatch' || inputs.db == 'all' || inputs.db == 'postgres-12'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version-file: .java-version
+      - name: Fetch the v1.3.0 tag
+        run: git fetch --no-tags origin tag v1.3.0
+      - name: Upgrade 1.3.0 to the shipped master
+        run: bash tools/tests/test_liquibase_upgrade_from_1.3.0.sh postgres-12
+
+  postgres-16-from-130:
+    name: Upgrade PostgreSQL 16 from 1.3.0
+    if: github.event_name != 'workflow_dispatch' || inputs.db == 'all' || inputs.db == 'postgres-16'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version-file: .java-version
+      - name: Fetch the v1.3.0 tag
+        run: git fetch --no-tags origin tag v1.3.0
+      - name: Upgrade 1.3.0 to the shipped master
+        run: bash tools/tests/test_liquibase_upgrade_from_1.3.0.sh postgres-16
+
+  oracle-23-from-130:
+    name: Upgrade Oracle 23ai from 1.3.0
+    if: github.event_name != 'workflow_dispatch' || inputs.db == 'all' || inputs.db == 'oracle-23'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version-file: .java-version
+      - name: Fetch the v1.3.0 tag
+        run: git fetch --no-tags origin tag v1.3.0
+      - name: Upgrade 1.3.0 to the shipped master
+        run: bash tools/tests/test_liquibase_upgrade_from_1.3.0.sh oracle-23
+
   dev-postgres-from:
     name: Upgrade development PostgreSQL from 1.2.6
     if: github.event_name != 'workflow_dispatch' || inputs.db == 'all' || inputs.db == 'postgres-16'
@@ -298,7 +358,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -325,7 +385,7 @@ jobs:
     timeout-minutes: 40
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           fetch-tags: true
