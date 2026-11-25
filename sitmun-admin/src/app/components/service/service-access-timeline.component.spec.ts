@@ -41,4 +41,24 @@ describe('ServiceAccessTimelineComponent', () => {
     expect(ticks).toHaveLength(5);
     expect((ticks[4] as HTMLElement).textContent?.trim()).toBe('entity.service.access.now');
   });
+
+  it('keeps ticks and tooltips on the same bucket until hours changes', () => {
+    jest.useFakeTimers().setSystemTime(new Date('2024-01-15T12:09:59'));
+    try {
+      fixture.componentRef.setInput('hours', Array.from({length: 144}, () => null));
+      fixture.detectChanges();
+      const firstTicks = fixture.componentInstance.tickLabels;
+      const firstTitle = fixture.componentInstance.title(0);
+      jest.setSystemTime(new Date('2024-01-15T12:10:01'));
+      fixture.detectChanges();
+      expect(fixture.componentInstance.tickLabels).toEqual(firstTicks);
+      expect(fixture.componentInstance.title(0)).toBe(firstTitle);
+      fixture.componentRef.setInput('hours', Array.from({length: 144}, () => null));
+      fixture.detectChanges();
+      expect(fixture.componentInstance.tickLabels).not.toEqual(firstTicks);
+      expect(fixture.componentInstance.title(0)).not.toBe(firstTitle);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
