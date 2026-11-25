@@ -10,6 +10,8 @@ import {
   simulateGetFeatureInfoLayers,
 } from './helpers/mia';
 
+const miaPanel = '.sitmun-map-feature-panel:has(.sitmun-mia-popup-content)';
+
 /**
  * More Info Advanced map render contract (#162):
  * after FeatureInfo-shaped identify results for Toponímia, viewer opens the MIA
@@ -62,10 +64,10 @@ test.describe('Viewer MIA render', () => {
       miaTaskIds: [MIA_PARENT_TASK_ID],
     });
 
-    await expect(page.locator('.sitmun-mia-popup-overlay.sitmun-mia-popup-visible')).toBeVisible({
+    await expect(page.locator('.sitmun-map-feature-panel:has(.sitmun-mia-popup-content)')).toBeVisible({
       timeout: 15_000,
     });
-    await expect(page.locator('[data-e2e-mia="1"]')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(miaPanel).locator('[data-e2e-mia="1"]')).toBeVisible({ timeout: 15_000 });
   });
 
   test('live backend render returns seeded MIA parent in overlay', async ({ page }) => {
@@ -87,10 +89,10 @@ test.describe('Viewer MIA render', () => {
     };
     expect(json.tasks?.some((task) => task.taskId === MIA_PARENT_TASK_ID)).toBeTruthy();
 
-    await expect(page.locator('.sitmun-mia-popup-overlay.sitmun-mia-popup-visible')).toBeVisible({
+    await expect(page.locator('.sitmun-map-feature-panel:has(.sitmun-mia-popup-content)')).toBeVisible({
       timeout: 15_000,
     });
-    await expect(page.locator(`[data-mia-task-id="${MIA_PARENT_TASK_ID}"]`)).toBeVisible({
+    await expect(page.locator(miaPanel).locator(`[data-mia-task-id="${MIA_PARENT_TASK_ID}"]`)).toBeVisible({
       timeout: 15_000,
     });
   });
@@ -108,10 +110,10 @@ test.describe('Viewer MIA render', () => {
     await loadQueryableLeafIntoCapas(page);
     await simulateGetFeatureInfo(page);
 
-    await expect(page.locator('.sitmun-mia-popup-overlay.sitmun-mia-popup-visible')).toBeVisible({
+    await expect(page.locator('.sitmun-map-feature-panel:has(.sitmun-mia-popup-content)')).toBeVisible({
       timeout: 15_000,
     });
-    await expect(page.locator('.sitmun-mia-error')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(miaPanel).locator('.sitmun-mia-error')).toBeVisible({ timeout: 15_000 });
   });
 
   test('close button hides MIA overlay', async ({ page }) => {
@@ -135,10 +137,10 @@ test.describe('Viewer MIA render', () => {
     await loadQueryableLeafIntoCapas(page);
     await simulateGetFeatureInfo(page);
 
-    const overlay = page.locator('.sitmun-mia-popup-overlay.sitmun-mia-popup-visible');
+    const overlay = page.locator('.sitmun-map-feature-panel:has(.sitmun-mia-popup-content)');
     await expect(overlay).toBeVisible({ timeout: 15_000 });
-    await page.locator('.sitmun-mia-popup-close').click();
-    await expect(page.locator('.sitmun-mia-popup-overlay.sitmun-mia-popup-visible')).toHaveCount(0);
+    await overlay.locator('.sitmun-map-feature-panel-close').click();
+    await expect(page.locator('.sitmun-map-feature-panel:has(.sitmun-mia-popup-content)')).toHaveCount(0);
   });
 
   test('re-renders MIA for FeatureInfo currentFeature among multi-feature GFI', async ({
@@ -187,7 +189,7 @@ test.describe('Viewer MIA render', () => {
       parameters?: { marker?: string };
     };
     expect(firstBody.parameters?.marker).toBe('first');
-    await expect(page.locator('[data-e2e-mia-marker="first"]')).toBeVisible({
+    await expect(page.locator(miaPanel).locator('[data-e2e-mia-marker="first"]')).toBeVisible({
       timeout: 15_000,
     });
 
@@ -202,10 +204,10 @@ test.describe('Viewer MIA render', () => {
     await selectMiaGfiFeature(page, 1);
 
     await secondRender;
-    await expect(page.locator('[data-e2e-mia-marker="second"]')).toBeVisible({
+    await expect(page.locator(miaPanel).locator('[data-e2e-mia-marker="second"]')).toBeVisible({
       timeout: 15_000,
     });
-    await expect(page.locator('[data-e2e-mia-marker="first"]')).toHaveCount(0);
+    await expect(page.locator(miaPanel).locator('[data-e2e-mia-marker="first"]')).toHaveCount(0);
   });
 
   test('late first render does not overwrite a newer identify', async ({ page }) => {
@@ -221,13 +223,13 @@ test.describe('Viewer MIA render', () => {
     await expect.poll(() => deferreds.length).toBe(2);
 
     deferreds[1].resolve(miaRenderTasksBody('fresh'));
-    await expect(page.locator('[data-e2e-mia-marker="fresh"]')).toBeVisible({
+    await expect(page.locator(miaPanel).locator('[data-e2e-mia-marker="fresh"]')).toBeVisible({
       timeout: 15_000,
     });
 
     deferreds[0].resolve(miaRenderTasksBody('stale'));
-    await expect(page.locator('[data-e2e-mia-marker="fresh"]')).toBeVisible();
-    await expect(page.locator('[data-e2e-mia-marker="stale"]')).toHaveCount(0);
+    await expect(page.locator(miaPanel).locator('[data-e2e-mia-marker="fresh"]')).toBeVisible();
+    await expect(page.locator(miaPanel).locator('[data-e2e-mia-marker="stale"]')).toHaveCount(0);
   });
 
   test('close during load ignores a late render fulfill', async ({ page }) => {
@@ -239,17 +241,17 @@ test.describe('Viewer MIA render', () => {
     await simulateGetFeatureInfo(page, { id: 1, marker: 'late' });
     await expect.poll(() => deferreds.length).toBe(1);
 
-    const overlay = page.locator('.sitmun-mia-popup-overlay.sitmun-mia-popup-visible');
+    const overlay = page.locator('.sitmun-map-feature-panel:has(.sitmun-mia-popup-content)');
     await expect(overlay).toBeVisible({ timeout: 15_000 });
-    await page.locator('.sitmun-mia-popup-close').click();
-    await expect(page.locator('.sitmun-mia-popup-overlay.sitmun-mia-popup-visible')).toHaveCount(
+    await overlay.locator('.sitmun-map-feature-panel-close').click();
+    await expect(page.locator('.sitmun-map-feature-panel:has(.sitmun-mia-popup-content)')).toHaveCount(
       0,
     );
 
     deferreds[0].resolve(miaRenderTasksBody('late'));
-    await expect(page.locator('.sitmun-mia-popup-overlay.sitmun-mia-popup-visible')).toHaveCount(
+    await expect(page.locator('.sitmun-map-feature-panel:has(.sitmun-mia-popup-content)')).toHaveCount(
       0,
     );
-    await expect(page.locator('[data-e2e-mia-marker="late"]')).toHaveCount(0);
+    await expect(page.locator(miaPanel).locator('[data-e2e-mia-marker="late"]')).toHaveCount(0);
   });
 });
