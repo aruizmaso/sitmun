@@ -2,6 +2,8 @@ package org.sitmun.infrastructure.persistence.type.srs;
 
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -27,6 +29,42 @@ class SpatialReferenceSystemTest extends BaseTest {
                 .content(serviceFixture("EPSG:1")))
         .andExpect(status().isCreated())
         .andExpect(jsonPath("$.supportedSRS[0]").value("EPSG:1"));
+  }
+
+  @Test
+  @WithMockUser(roles = "ADMIN")
+  void postNormalizesOgcEpsgIdentifiers() throws Exception {
+    mvc.perform(
+            post(URIConstants.SERVICES_URI)
+                .contentType(APPLICATION_JSON)
+                .content(serviceFixture("urn:ogc:def:crs:EPSG::25831",
+                    "http://www.opengis.net/def/crs/EPSG/0/4326",
+                    "urn:x-ogc:def:crs:EPSG:3857", " EPSG:4258 ")))
+        .andExpect(status().isCreated())
+        .andExpect(jsonPath("$.supportedSRS[0]").value("EPSG:25831"))
+        .andExpect(jsonPath("$.supportedSRS[1]").value("EPSG:4326"))
+        .andExpect(jsonPath("$.supportedSRS[2]").value("EPSG:3857"))
+        .andExpect(jsonPath("$.supportedSRS[3]").value("EPSG:4258"));
+  }
+
+  @Test
+  @WithMockUser(roles = "ADMIN")
+  void patchNormalizesAndPersistsEpsgAndRejectsInvalidValues() throws Exception {
+    String location =
+        mvc.perform(post(URIConstants.SERVICES_URI).contentType(APPLICATION_JSON)
+                .content(serviceFixture("EPSG:1")))
+            .andExpect(status().isCreated())
+            .andReturn().getResponse().getHeader("Location");
+
+    mvc.perform(patch(location).contentType(APPLICATION_JSON)
+            .content("{\"supportedSRS\":[\"urn:ogc:def:crs:EPSG:9.9:25831\"]}"))
+        .andExpect(status().is2xxSuccessful());
+    mvc.perform(get(location))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.supportedSRS[0]").value("EPSG:25831"));
+    mvc.perform(patch(location).contentType(APPLICATION_JSON)
+            .content("{\"supportedSRS\":[\"urn:ogc:def:crs:EPSG::invalid\"]}"))
+        .andExpect(status().isBadRequest());
   }
 
   @Test
