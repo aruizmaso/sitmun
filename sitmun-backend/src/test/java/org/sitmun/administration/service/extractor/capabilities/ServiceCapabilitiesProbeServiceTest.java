@@ -74,6 +74,30 @@ class ServiceCapabilitiesProbeServiceTest {
   }
 
   @Test
+  void wfsUsesStoredPasswordForBasicAuthentication() {
+    Service stored =
+        Service.builder()
+            .id(12)
+            .serviceURL("https://stored.example/wfs?version=2.0.0")
+            .type("WFS")
+            .authenticationMode("HTTP Basic authentication")
+            .user("alice")
+            .password("secret")
+            .build();
+    when(serviceRepository.findById(12)).thenReturn(Optional.of(stored));
+    when(extractor.extract(any(Request.class))).thenReturn(success());
+    ServiceCapabilitiesRequest request = new ServiceCapabilitiesRequest();
+    request.setId(12);
+
+    probeService.probe(request);
+
+    Request httpRequest = capturedRequest();
+    assertThat(httpRequest.url().queryParameter("service")).isEqualTo("WFS");
+    assertThat(httpRequest.url().queryParameter("version")).isEqualTo("2.0.0");
+    assertThat(httpRequest.header("Authorization")).isEqualTo(Credentials.basic("alice", "secret"));
+  }
+
+  @Test
   @DisplayName("Does not send Basic when authenticationMode is None")
   void skipsBasicWhenModeIsNone() {
     when(extractor.extract(any(Request.class))).thenReturn(success());

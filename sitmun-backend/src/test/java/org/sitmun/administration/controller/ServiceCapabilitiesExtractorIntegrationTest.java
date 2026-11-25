@@ -1,5 +1,7 @@
 package org.sitmun.administration.controller;
 
+import static org.hamcrest.Matchers.allOf;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.startsWith;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -45,13 +47,31 @@ class ServiceCapabilitiesExtractorIntegrationTest extends BaseTest {
 
   @Test
   @WithMockUser(roles = "ADMIN")
-  @DisplayName("Non-WMS type fails before origin fetch")
+  @DisplayName("WMTS type fails before origin fetch")
   void rejectNonWmsType() throws Exception {
     postCapabilities(
             new JSONObject().put("url", "https://example.com/wmts").put("type", "WMTS").toString())
         .andExpect(MockMvcResultMatchers.status().isBadRequest())
         .andExpect(jsonPath("$.success").value(false))
         .andExpect(jsonPath("$.reason").value("Unsupported service type for capabilities: WMTS"));
+  }
+
+  @Test
+  @WithMockUser(roles = "ADMIN")
+  void wfsCapabilitiesExposeFeatureTypesForAdmin() throws Exception {
+    postCapabilities(body(html.url("/wfs-200") + "?version=2.0.0", "WFS"))
+        .andExpect(MockMvcResultMatchers.status().isOk())
+        .andExpect(jsonPath("$.success").value(true))
+        .andExpect(jsonPath("$.type").value("OGC:WFS 2.0.0"))
+        .andExpect(
+            jsonPath("$['asJson']['wfs:WFS_Capabilities']['wfs:FeatureTypeList']['wfs:FeatureType'][0]['wfs:Name']")
+                .value("app:roads"))
+        .andExpect(
+            jsonPath("$['asJson']['wfs:WFS_Capabilities']['wfs:FeatureTypeList']['wfs:FeatureType'][1]['wfs:Name']")
+                .value("app:parcels"))
+        .andExpect(
+            jsonPath("$['asJson']['wfs:WFS_Capabilities']['wfs:FeatureTypeList']['wfs:FeatureType'][0]['wfs:DefaultCRS']")
+                .value("urn:ogc:def:crs:EPSG::25831"));
   }
 
   @Test
@@ -122,7 +142,9 @@ class ServiceCapabilitiesExtractorIntegrationTest extends BaseTest {
     postCapabilities(body("https://fake", "WMS"))
         .andExpect(MockMvcResultMatchers.status().isBadRequest())
         .andExpect(jsonPath("$.success").value(false))
-        .andExpect(jsonPath("$.reason", startsWith("UnknownHostException: fake")))
+        .andExpect(
+            jsonPath(
+                "$.reason", allOf(startsWith("UnknownHostException:"), containsString("fake"))))
         .andExpect(jsonPath("$.asText").value(nullValue()))
         .andExpect(jsonPath("$.asJson").value(nullValue()));
   }

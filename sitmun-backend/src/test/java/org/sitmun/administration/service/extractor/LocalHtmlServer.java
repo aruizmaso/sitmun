@@ -16,6 +16,22 @@ public final class LocalHtmlServer implements AutoCloseable {
               + "<ows:Exception exceptionCode=\"MissingParameterValue\" locator=\"request\"/>"
               + "</ows:ExceptionReport>")
           .getBytes(StandardCharsets.UTF_8);
+  private static final byte[] WFS_200 =
+      ("""
+          <?xml version="1.0" encoding="UTF-8"?>
+          <wfs:WFS_Capabilities xmlns:wfs="http://www.opengis.net/wfs/2.0"
+              xmlns:ows="http://www.opengis.net/ows/1.1" version="2.0.0">
+            <ows:ServiceIdentification><ows:Title>local</ows:Title></ows:ServiceIdentification>
+            <wfs:FeatureTypeList>
+              <wfs:FeatureType><wfs:Name>app:roads</wfs:Name><wfs:Title>Roads</wfs:Title>
+                <wfs:DefaultCRS>urn:ogc:def:crs:EPSG::25831</wfs:DefaultCRS>
+              </wfs:FeatureType>
+              <wfs:FeatureType><wfs:Name>app:parcels</wfs:Name><wfs:Title>Parcels</wfs:Title>
+                <wfs:DefaultCRS>urn:ogc:def:crs:EPSG::25831</wfs:DefaultCRS>
+              </wfs:FeatureType>
+            </wfs:FeatureTypeList>
+          </wfs:WFS_Capabilities>
+          """).getBytes(StandardCharsets.UTF_8);
   private static final byte[] WMS_130 =
       ("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
               + "<WMS_Capabilities version=\"1.3.0\">"
@@ -57,6 +73,9 @@ public final class LocalHtmlServer implements AutoCloseable {
           } else if ("/wfs-exception".equals(path)) {
             body = WFS_EXCEPTION;
             status = 400;
+            contentType = "application/xml; charset=UTF-8";
+          } else if ("/wfs-200".equals(path)) {
+            body = WFS_200;
             contentType = "application/xml; charset=UTF-8";
           } else if ("/wms-130".equals(path)) {
             body = WMS_130;

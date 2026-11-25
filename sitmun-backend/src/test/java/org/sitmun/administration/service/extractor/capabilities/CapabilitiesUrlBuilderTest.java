@@ -41,7 +41,23 @@ class CapabilitiesUrlBuilderTest {
   }
 
   @Test
-  @DisplayName("Rejects non-WMS types")
+  @DisplayName("Builds WFS capabilities while preserving existing parameters")
+  void buildsWfsCapabilities() {
+    String result =
+        CapabilitiesUrlBuilder.build("https://example.com/wfs?version=2.0.0&token=abc", "WFS");
+
+    assertThat(result)
+        .contains("version=2.0.0", "token=abc", "request=GetCapabilities", "service=WFS");
+  }
+
+  @Test
+  void leavesExistingWfsGetCapabilitiesUnchanged() {
+    String endpoint = "https://example.com/wfs?REQUEST=GetCapabilities&version=2.0.0";
+    assertThat(CapabilitiesUrlBuilder.build(endpoint, "WFS")).isEqualTo(endpoint);
+  }
+
+  @Test
+  @DisplayName("Rejects unsupported types")
   void rejectsNonWmsType() {
     assertThatThrownBy(() -> CapabilitiesUrlBuilder.build("https://example.com/wmts", "WMTS"))
         .isInstanceOf(IllegalArgumentException.class)
