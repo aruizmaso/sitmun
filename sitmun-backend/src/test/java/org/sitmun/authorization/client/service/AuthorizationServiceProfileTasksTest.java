@@ -76,7 +76,8 @@ class AuthorizationServiceProfileTasksTest {
             treeNodeRepository,
             mock(TranslationService.class),
             accessPolicy,
-            mock(ViewerUsage.class));
+            mock(ViewerUsage.class),
+            mock(org.sitmun.authorization.editing.WfsEditingPolicy.class));
 
     ProfileContext context =
         ProfileContext.builder()

@@ -24,6 +24,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.sitmun.authorization.access.UserApplicationAccessPolicy;
+import org.sitmun.authorization.editing.WfsEditingPolicy;
 import org.sitmun.authorization.proxy.decorators.HttpUserParametrizationDecorator;
 import org.sitmun.authorization.proxy.decorators.QueryPaginationDecorator;
 import org.sitmun.authorization.proxy.decorators.SqlUserParametrizationDecorator;
@@ -101,6 +102,38 @@ class ProxyConfigurationServiceTest {
                 org.sitmun.domain.cartography.parameter.CartographyServiceParameterRepository
                     .class));
     ReflectionTestUtils.setField(service, "responseValidityTime", 3600);
+  }
+
+  @Test
+  void authorizedWfsSnapshotBuildsPayloadWithoutResolvingConfiguredDestinationAgain() {
+    Service serviceRow =
+        Service.builder()
+            .id(44)
+            .type("WFS")
+            .serviceURL("http://changed.test/wfs")
+            .blocked(false)
+            .build();
+    when(serviceRepository.findById(44)).thenReturn(Optional.of(serviceRow));
+    var snapshot =
+        new WfsEditingPolicy.Destination(
+            "http://authorized.test/wfs", Map.of("REQUEST", "Transaction", "tenant", "fixed"));
+    var request =
+        ConfigProxyRequestDto.builder()
+            .type("WFS")
+            .typeId(44)
+            .method("POST")
+            .parameters(Map.of())
+            .requestBody("<Transaction/>")
+            .build();
+
+    ConfigProxyDto configuration =
+        service.getConfiguration(request, 0, new RequestCoordinates(), snapshot);
+    WmsPayloadDto payload = (WmsPayloadDto) configuration.getPayload();
+
+    assertEquals("http://authorized.test/wfs", payload.getUri());
+    assertEquals("Transaction", payload.getParameters().get("REQUEST"));
+    assertEquals("fixed", payload.getParameters().get("tenant"));
+    verify(systemVariableResolver, never()).resolve(anyString(), any(RequestCoordinates.class));
   }
 
   private RequestCoordinates coordinatesFor(ConfigProxyRequestDto request) {
@@ -2087,7 +2120,8 @@ class ProxyConfigurationServiceTest {
     // Given: validation is enabled with a mock validator
     ResourceAccessValidator mockValidator = mock(ResourceAccessValidator.class);
     when(mockValidator.supports(TYPE_SQL)).thenReturn(true);
-    when(mockValidator.validate(any(), eq("admin"))).thenReturn(true);
+    when(mockValidator.authorize(any(), eq("admin")))
+        .thenReturn(ResourceAccessValidator.Authorization.granted());
 
     ProxyConfigurationService serviceWithValidator =
         proxyServiceWithAccessValidators(List.of(mockValidator));
@@ -2100,7 +2134,7 @@ class ProxyConfigurationServiceTest {
 
     // Then
     assertTrue(result);
-    verify(mockValidator).validate(any(), eq("admin"));
+    verify(mockValidator).authorize(any(), eq("admin"));
   }
 
   @Test
@@ -2109,7 +2143,8 @@ class ProxyConfigurationServiceTest {
     // Given: validation is enabled with a mock validator that denies access
     ResourceAccessValidator mockValidator = mock(ResourceAccessValidator.class);
     when(mockValidator.supports(TYPE_SQL)).thenReturn(true);
-    when(mockValidator.validate(any(), eq("unauthorizedUser"))).thenReturn(false);
+    when(mockValidator.authorize(any(), eq("unauthorizedUser")))
+        .thenReturn(ResourceAccessValidator.Authorization.denied());
 
     ProxyConfigurationService serviceWithValidator =
         proxyServiceWithAccessValidators(List.of(mockValidator));
@@ -2122,7 +2157,7 @@ class ProxyConfigurationServiceTest {
 
     // Then
     assertFalse(result);
-    verify(mockValidator).validate(any(), eq("unauthorizedUser"));
+    verify(mockValidator).authorize(any(), eq("unauthorizedUser"));
   }
 
   @Test
@@ -2133,7 +2168,8 @@ class ProxyConfigurationServiceTest {
     ResourceAccessValidator validator2 = mock(ResourceAccessValidator.class);
 
     when(validator1.supports(TYPE_WMS)).thenReturn(true);
-    when(validator1.validate(any(), any())).thenReturn(true);
+    when(validator1.authorize(any(), any()))
+        .thenReturn(ResourceAccessValidator.Authorization.granted());
 
     ProxyConfigurationService serviceWithValidators =
         proxyServiceWithAccessValidators(List.of(validator1, validator2));
@@ -2146,8 +2182,8 @@ class ProxyConfigurationServiceTest {
 
     // Then: first validator is used, second is never called
     assertTrue(result);
-    verify(validator1).validate(any(), eq("admin"));
-    verify(validator2, never()).validate(any(), any());
+    verify(validator1).authorize(any(), eq("admin"));
+    verify(validator2, never()).authorize(any(), any());
   }
 
   // Security tests for #{...} client rejection

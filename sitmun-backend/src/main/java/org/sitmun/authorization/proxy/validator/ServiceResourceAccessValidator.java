@@ -1,6 +1,7 @@
 package org.sitmun.authorization.proxy.validator;
 
 import static org.sitmun.domain.DomainConstants.Services.*;
+import static org.sitmun.infrastructure.security.core.SecurityConstants.isPublicPrincipal;
 
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -8,6 +9,8 @@ import java.util.Objects;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.sitmun.authorization.client.service.AuthorizationService;
+import org.sitmun.authorization.editing.WfsEditingPolicy;
 import org.sitmun.authorization.proxy.dto.ConfigProxyRequestDto;
 import org.sitmun.authorization.proxy.ogc.CartographyGrant;
 import org.sitmun.authorization.proxy.ogc.OgcLayerAccess;
@@ -21,6 +24,7 @@ import org.sitmun.domain.service.ServiceRepository;
 import org.sitmun.domain.territory.TerritoryRepository;
 import org.sitmun.domain.user.UserRepository;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * Validates user access to services through the proxy middleware.
@@ -78,6 +82,8 @@ public class ServiceResourceAccessValidator implements ResourceAccessValidator {
   private final CartographyRepository cartographyRepository;
   private final CartographyServiceParameterRepository cartographyServiceParameterRepository;
   private final RoleRepository roleRepository;
+  private final AuthorizationService authorizationService;
+  private final WfsEditingPolicy wfsEditingPolicy;
 
   @Override
   public boolean supports(String type) {
@@ -85,7 +91,14 @@ public class ServiceResourceAccessValidator implements ResourceAccessValidator {
   }
 
   @Override
+  @Transactional(readOnly = true)
   public boolean validate(ConfigProxyRequestDto request, String userName) {
+    return authorize(request, userName).allowed();
+  }
+
+  @Override
+  @Transactional(readOnly = true)
+  public Authorization authorize(ConfigProxyRequestDto request, String userName) {
     log.debug(
         "Validating Service access: user={}, appId={}, terId={}, type={}, serviceId={}",
         userName,
@@ -97,7 +110,7 @@ public class ServiceResourceAccessValidator implements ResourceAccessValidator {
     var serviceOpt = serviceRepository.findById(request.getTypeId());
     if (serviceOpt.isEmpty()) {
       log.warn("Service not found: {}", request.getTypeId());
-      return false;
+      return Authorization.denied();
     }
 
     var service = serviceOpt.get();
@@ -106,19 +119,19 @@ public class ServiceResourceAccessValidator implements ResourceAccessValidator {
           "Access denied: Service is blocked - serviceId={}, user={}",
           request.getTypeId(),
           userName);
-      return false;
+      return Authorization.denied();
     }
 
     var userOpt = userRepository.findByUsername(userName);
     if (userOpt.isEmpty()) {
       log.warn("User not found: {}", userName);
-      return false;
+      return Authorization.denied();
     }
 
     var applicationExists = applicationRepository.existsById(request.getAppId());
     if (!applicationExists) {
       log.warn("Application not found: {}", request.getAppId());
-      return false;
+      return Authorization.denied();
     }
 
     // Check if territory exists (terId can be 0 for public access)
@@ -126,7 +139,7 @@ public class ServiceResourceAccessValidator implements ResourceAccessValidator {
       var territoryExists = territoryRepository.existsById(request.getTerId());
       if (!territoryExists) {
         log.warn("Territory not found: {}", request.getTerId());
-        return false;
+        return Authorization.denied();
       }
     }
 
@@ -141,7 +154,7 @@ public class ServiceResourceAccessValidator implements ResourceAccessValidator {
           request.getAppId(),
           request.getTerId(),
           request.getTypeId());
-      return false;
+      return Authorization.denied();
     }
 
     var accessibleCartographies =
@@ -161,12 +174,69 @@ public class ServiceResourceAccessValidator implements ResourceAccessValidator {
           userName,
           request.getTypeId(),
           request.getTerId());
-      return false;
+      return Authorization.denied();
     }
 
     List<CartographyGrant> grants = serviceCartographies.stream().map(this::grant).toList();
     OgcRequestNames.View names =
         OgcRequestNames.parse(request.getParameters(), request.getRequestBody());
+    if (names.rejected()) return Authorization.denied();
+    if (names.operation() == OgcRequestNames.Operation.TRANSACTION) {
+      if (isPublicPrincipal(userName)
+          || request.getCartographyId() == null
+          || !TYPE_WFS.equalsIgnoreCase(request.getType())
+          || !TYPE_WFS.equalsIgnoreCase(service.getType())
+          || !"POST".equalsIgnoreCase(request.getMethod())
+          || !hasOnlyWriteEnvelopeParameters(request)) {
+        return Authorization.denied();
+      }
+      try {
+        // Full account/application/territory gate and the existing effective-role task query.
+        var tasks = authorizationService.findTasksByUserApplicationAndTerritory(
+            userName, request.getAppId(), request.getTerId());
+        return serviceCartographies.stream()
+            .filter(layer -> Objects.equals(layer.getId(), request.getCartographyId()))
+            .findFirst()
+            .map(layer -> {
+              var destination =
+                  wfsEditingPolicy.destination(
+                      layer,
+                      tasks,
+                      accessibleCartographies,
+                      userName,
+                      request.getAppId(),
+                      request.getTerId());
+              if (destination.isEmpty()) return Authorization.denied();
+              var types = wfsEditingPolicy.target(layer, destination.get());
+              if (types.isEmpty() || !OgcLayerAccess.allowTransaction(names, types.get())) {
+                return Authorization.denied();
+              }
+              try {
+                if (org.sitmun.authorization.editing.WfsTransaction.deletesOnly(
+                    request.getRequestBody())) {
+                  return new Authorization(true, destination);
+                }
+                var schema = wfsEditingPolicy.schema(layer, destination.get());
+                if (schema.isEmpty()) return Authorization.denied();
+                var policy =
+                    org.sitmun.authorization.editing.WfsAttributePolicy.effective(
+                        layer, tasks, schema.get());
+                var denied =
+                    org.sitmun.authorization.editing.WfsTransaction.forbiddenAttributes(
+                        request.getRequestBody(), schema.get(), policy);
+                if (!denied.isEmpty()) {
+                  throw new org.sitmun.authorization.editing.WfsAttributeDeniedException(denied);
+                }
+                return new Authorization(true, destination);
+              } catch (javax.xml.stream.XMLStreamException ex) {
+                return Authorization.denied();
+              }
+            })
+            .orElseGet(Authorization::denied);
+      } catch (org.springframework.security.access.AccessDeniedException ex) {
+        return Authorization.denied();
+      }
+    }
     boolean allowed =
         request.getCartographyId() == null
             ? OgcLayerAccess.allowService(names, grants)
@@ -178,11 +248,20 @@ public class ServiceResourceAccessValidator implements ResourceAccessValidator {
           request.getTypeId(),
           request.getCartographyId(),
           names.operation());
-      return false;
+      return Authorization.denied();
     }
 
     log.debug("Service access validation passed for user: {}", userName);
-    return true;
+    return Authorization.granted();
+  }
+
+  private static boolean hasOnlyWriteEnvelopeParameters(ConfigProxyRequestDto request) {
+    // Routing and vendor options come from verified server configuration, not the writer.
+    return request.getParameters() == null || request.getParameters().entrySet().stream()
+        .allMatch(entry ->
+            "SERVICE".equalsIgnoreCase(entry.getKey()) && TYPE_WFS.equalsIgnoreCase(entry.getValue())
+                || "REQUEST".equalsIgnoreCase(entry.getKey())
+                    && "Transaction".equalsIgnoreCase(entry.getValue()));
   }
 
   private boolean allowCartography(

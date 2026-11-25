@@ -1,0 +1,255 @@
+package org.sitmun.authorization.editing;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import javax.xml.namespace.QName;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.sitmun.authorization.client.service.AuthorizationService;
+import org.sitmun.authorization.proxy.dto.ConfigProxyRequestDto;
+import org.sitmun.authorization.proxy.validator.ServiceResourceAccessValidator;
+import org.sitmun.domain.application.Application;
+import org.sitmun.domain.application.ApplicationRepository;
+import org.sitmun.domain.cartography.Cartography;
+import org.sitmun.domain.cartography.CartographyRepository;
+import org.sitmun.domain.cartography.parameter.CartographyServiceParameterRepository;
+import org.sitmun.domain.role.Role;
+import org.sitmun.domain.role.RoleRepository;
+import org.sitmun.domain.service.Service;
+import org.sitmun.domain.service.ServiceRepository;
+import org.sitmun.domain.task.Task;
+import org.sitmun.domain.task.type.TaskType;
+import org.sitmun.domain.territory.Territory;
+import org.sitmun.domain.territory.TerritoryRepository;
+import org.sitmun.domain.user.User;
+import org.sitmun.domain.user.UserRepository;
+import org.sitmun.infrastructure.variables.SystemVariableResolver;
+import org.springframework.security.access.AccessDeniedException;
+
+class WfsWriteAuthorizationTest {
+  private final AuthorizationService authorization = mock(AuthorizationService.class);
+  private final WfsMetadataResolver metadata = mock(WfsMetadataResolver.class);
+  private final UserRepository users = mock(UserRepository.class);
+  private final ApplicationRepository applications = mock(ApplicationRepository.class);
+  private final TerritoryRepository territories = mock(TerritoryRepository.class);
+  private final SystemVariableResolver variables = mock(SystemVariableResolver.class);
+  private final CartographyRepository cartographies = mock(CartographyRepository.class);
+  private final ServiceRepository services = mock(ServiceRepository.class);
+  private final RoleRepository roles = mock(RoleRepository.class);
+  private ServiceResourceAccessValidator validator;
+  private Task task;
+  private Cartography layer;
+
+  @BeforeEach
+  void setup() throws Exception {
+    var service =
+        Service.builder()
+            .id(5)
+            .type("WFS")
+            .serviceURL("http://configured.test/wfs")
+            .blocked(false)
+            .build();
+    layer =
+        Cartography.builder()
+            .id(8)
+            .service(service)
+            .layers(List.of("app:roads"))
+            .blocked(false)
+            .build();
+    task = Task.builder().id(7).type(TaskType.builder().id(0).build()).cartography(layer).build();
+    when(variables.resolve(anyString(), any())).thenAnswer(invocation -> invocation.getArgument(0));
+    var policy = new WfsEditingPolicy(metadata, variables, users, applications, territories);
+    validator =
+        new ServiceResourceAccessValidator(
+            services,
+            users,
+            applications,
+            territories,
+            cartographies,
+            mock(CartographyServiceParameterRepository.class),
+            roles,
+            authorization,
+            policy);
+    when(services.findById(5)).thenReturn(Optional.of(service));
+    when(users.findByUsername("alice"))
+        .thenReturn(Optional.of(User.builder().username("alice").build()));
+    when(applications.existsById(1)).thenReturn(true);
+    when(territories.existsById(2)).thenReturn(true);
+    when(applications.findById(1)).thenReturn(Optional.of(Application.builder().id(1).build()));
+    when(territories.findById(2)).thenReturn(Optional.of(Territory.builder().id(2).build()));
+    when(roles.findRolesByApplicationAndUserAndTerritory("alice", 1, 2))
+        .thenReturn(List.of(Role.builder().id(9).build()));
+    when(cartographies.findByRolesAndTerritory(anyList(), eq(2))).thenReturn(List.of(layer));
+    when(authorization.findTasksByUserApplicationAndTerritory("alice", 1, 2))
+        .thenReturn(List.of(task));
+    when(metadata.resolve(anyString(), anyMap(), any(), any(), anyList()))
+        .thenReturn(Set.of(new QName("urn:roads", "roads")));
+    when(metadata.describe(anyString(), anyMap(), any(), any(), anyList()))
+        .thenReturn(WfsAttributePolicyTest.schema());
+  }
+
+  @Test
+  void transactionResolvesOneImmutableDestinationForTypeAndSchemaChecks() throws Exception {
+    task.setProperties(Map.of(WfsAttributePolicy.KEY,
+        Map.of("version", 1, "featureType", "{urn:roads}roads",
+            "editableAttributes", List.of("{urn:roads}name"))));
+    clearInvocations(metadata, variables);
+    var metadataParameters = new java.util.ArrayList<Map<String, String>>();
+    doAnswer(
+            invocation -> {
+              metadataParameters.add(invocation.getArgument(1));
+              return Set.of(new QName("urn:roads", "roads"));
+            })
+        .when(metadata)
+        .resolve(anyString(), anyMap(), any(), any(), anyList());
+    doAnswer(
+            invocation -> {
+              metadataParameters.add(invocation.getArgument(1));
+              return WfsAttributePolicyTest.schema();
+            })
+        .when(metadata)
+        .describe(anyString(), anyMap(), any(), any(), anyList());
+
+    assertTrue(validator.validate(request(
+        "<w:Update typeName='a:roads'><w:Property><w:Name>a:name</w:Name>"
+            + "<w:Value>new</w:Value></w:Property></w:Update>"), "alice"));
+
+    verify(metadata, times(1)).resolve(eq("http://configured.test/wfs"), anyMap(),
+        any(), any(), anyList());
+    verify(metadata, times(1)).describe(eq("http://configured.test/wfs"), anyMap(),
+        any(), any(), anyList());
+    verify(variables, times(1)).resolve(eq("http://configured.test/wfs"), any());
+    assertSame(metadataParameters.get(0), metadataParameters.get(1));
+
+    var snapshot =
+        new WfsEditingPolicy.Destination("http://authorized.test/wfs", Map.of("tenant", "fixed"));
+    assertThrows(UnsupportedOperationException.class,
+        () -> snapshot.fixed().put("tenant", "changed"));
+  }
+
+  @Test
+  void absentPolicyDeniesAttributesAndRevocationRejectsTheWholeBatch() {
+    String update = "<w:Update typeName='a:roads'><w:Property><w:Name>a:name</w:Name><w:Value>new</w:Value></w:Property></w:Update>";
+    assertThrows(WfsAttributeDeniedException.class, () -> validator.validate(request(update), "alice"));
+    task.setProperties(Map.of(WfsAttributePolicy.KEY, Map.of("version", 1, "featureType", "{urn:roads}roads",
+        "editableAttributes", List.of("{urn:roads}name"))));
+    assertTrue(validator.validate(request(update), "alice"));
+    task.setProperties(Map.of());
+    var rejected = assertThrows(WfsAttributeDeniedException.class, () -> validator.validate(
+        request("<w:Insert><a:roads><a:id>1</a:id></a:roads></w:Insert>" + update), "alice"));
+    assertEquals(Set.of("{urn:roads}name"), rejected.attributes());
+    assertTrue(validator.validate(request("<w:Delete typeName='a:roads'/>"), "alice"));
+  }
+
+  @Test
+  void authorizesEmptyNamespaceFromThePersistedContractAndReportsRevocationWithoutValues() throws Exception {
+    when(metadata.describe(anyString(), anyMap(), any(), any(), anyList()))
+        .thenReturn(WfsAttributePolicyTest.schema(false));
+    String update = "<w:Update typeName='a:roads'><w:Property><w:Name>name</w:Name>"
+        + "<w:Value>private-value</w:Value></w:Property></w:Update>";
+    task.setProperties(Map.of("scope", "feat-edit", WfsAttributePolicy.KEY,
+        Map.of("version", 1, "featureType", "{urn:roads}roads", "editableAttributes", List.of("{}name"))));
+    assertTrue(validator.validate(request(update), "alice"));
+    task.setProperties(Map.of("scope", "feat-edit", WfsAttributePolicy.KEY,
+        Map.of("version", 1, "featureType", "{urn:roads}roads", "editableAttributes", List.of("{urn:roads}name"))));
+    var rejected = assertThrows(WfsAttributeDeniedException.class,
+        () -> validator.validate(request(update), "alice"));
+    assertEquals(Set.of("{}name"), rejected.attributes());
+    task.setProperties(Map.of());
+    assertEquals(Set.of("{}name"), assertThrows(WfsAttributeDeniedException.class,
+        () -> validator.validate(request(update), "alice")).attributes());
+    // Creation and geometry remain independent of existing-feature attribute grants.
+    assertTrue(validator.validate(request("<w:Insert><a:roads><name>new</name></a:roads></w:Insert>"), "alice"));
+    assertTrue(validator.validate(request(
+        "<w:Update typeName='a:roads'><w:Property><w:Name>shape</w:Name><w:Value/></w:Property></w:Update>"), "alice"));
+  }
+
+  @Test
+  void authorizedWriteHasVerifiedNamespaceAndRevocationIsRecalculated() {
+    assertTrue(
+        validator.validate(
+            request(
+                "<w:Insert><a:roads/><b:roads/></w:Insert><w:Update typeName='a:roads'/><w:Delete"
+                    + " typeName='b:roads'/>"),
+            "alice"));
+    when(authorization.findTasksByUserApplicationAndTerritory("alice", 1, 2)).thenReturn(List.of());
+    clearInvocations(metadata);
+    assertFalse(validator.validate(request("<w:Delete typeName='a:roads'/>"), "alice"));
+    verifyNoInteractions(metadata);
+  }
+
+  @Test
+  void contextDenialAndWrongScopeNeverFetchMetadata() {
+    when(authorization.findTasksByUserApplicationAndTerritory("alice", 1, 2))
+        .thenThrow(new AccessDeniedException("context"));
+    assertFalse(validator.validate(request("<w:Delete typeName='a:roads'/>"), "alice"));
+    doReturn(List.of(task))
+        .when(authorization)
+        .findTasksByUserApplicationAndTerritory("alice", 1, 2);
+    task.setProperties(Map.of("scope", "db-edit"));
+    assertFalse(validator.validate(request("<w:Delete typeName='a:roads'/>"), "alice"));
+    verifyNoInteractions(metadata);
+  }
+
+  @Test
+  void deniesEntireMixedTransactionAndBlockedOrUnreadableCartography() {
+    assertFalse(validator.validate(request("<w:Insert><a:roads/><x:secret/></w:Insert>"), "alice"));
+    layer.setBlocked(true);
+    clearInvocations(metadata);
+    assertFalse(validator.validate(request("<w:Delete typeName='a:roads'/>"), "alice"));
+    verifyNoInteractions(metadata);
+    layer.setBlocked(false);
+    when(cartographies.findByRolesAndTerritory(anyList(), eq(2))).thenReturn(List.of());
+    assertFalse(validator.validate(request("<w:Delete typeName='a:roads'/>"), "alice"));
+  }
+
+  @Test
+  void rejectsServicePathWrongRouteAndMalformedXmlWithoutMetadata() {
+    var request = request("<w:Delete typeName='a:roads'/>");
+    request.setCartographyId(null);
+    assertFalse(validator.validate(request, "alice"));
+    request.setCartographyId(8);
+    request.setType("WMS");
+    assertFalse(validator.validate(request, "alice"));
+    request.setType("WFS");
+    request.setRequestBody("<not-xml");
+    assertFalse(validator.validate(request, "alice"));
+    verifyNoInteractions(metadata);
+  }
+
+  @Test
+  void deniesPublicWritesAndClientSuppliedDestinationParametersBeforeMetadata() {
+    var request = request("<w:Delete typeName='a:roads'/>");
+    when(users.findByUsername("public"))
+        .thenReturn(Optional.of(User.builder().username("public").build()));
+    when(roles.findRolesByApplicationAndUserAndTerritory("public", 1, 2))
+        .thenReturn(List.of(Role.builder().id(9).build()));
+    assertFalse(validator.validate(request, "public"));
+    request.setParameters(Map.of("typename", "a:roads"));
+    assertFalse(validator.validate(request, "alice"));
+    verifyNoInteractions(metadata);
+  }
+
+  private ConfigProxyRequestDto request(String operations) {
+    return ConfigProxyRequestDto.builder()
+        .appId(1)
+        .terId(2)
+        .type("WFS")
+        .typeId(5)
+        .cartographyId(8)
+        .method("POST")
+        .parameters(Map.of())
+        .requestBody(
+            "<w:Transaction xmlns:w='http://www.opengis.net/wfs' xmlns:a='urn:roads'"
+                + " xmlns:b='urn:roads' xmlns:x='urn:secret'>"
+                + operations
+                + "</w:Transaction>")
+        .build();
+  }
+}

@@ -20,6 +20,7 @@ import org.sitmun.infrastructure.persistence.type.i18n.I18n;
 import org.sitmun.infrastructure.persistence.type.i18n.I18nListener;
 import org.sitmun.infrastructure.persistence.type.list.StringListAttributeConverter;
 import org.sitmun.infrastructure.persistence.type.srs.Srs;
+import org.sitmun.infrastructure.persistence.type.srs.SrsIdentifier;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
@@ -73,6 +74,13 @@ public class Service {
   @Srs
   @JsonView(ClientConfigurationViews.ApplicationTerritory.class)
   private List<String> supportedSRS;
+
+  public void setSupportedSRS(List<String> supportedSRS) {
+    this.supportedSRS =
+        supportedSRS == null
+            ? null
+            : new ArrayList<>(supportedSRS.stream().map(SrsIdentifier::normalize).toList());
+  }
 
   /** Legend endpoint. */
   @Column(name = "SER_LEGEND", length = PersistenceConstants.URL)

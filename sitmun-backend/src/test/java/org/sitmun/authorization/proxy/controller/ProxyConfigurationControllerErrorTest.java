@@ -4,6 +4,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.doAnswer;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
 import static org.springframework.http.MediaType.APPLICATION_PROBLEM_JSON;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -112,7 +113,8 @@ class ProxyConfigurationControllerErrorTest {
   void returnsForbiddenProblemWhenIdentifiedPrincipalCannotAccessResource() throws Exception {
     when(delegatedTokenAuthenticator.authenticate(eq("proxy-jwt"), anyCollection()))
         .thenReturn(new Outcome.Success(new Result("alice", System.currentTimeMillis())));
-    when(proxyConfigurationService.validateUserAccess(any(), eq("alice"))).thenReturn(false);
+    when(proxyConfigurationService.authorizeUserAccess(any(), eq("alice")))
+        .thenReturn(org.sitmun.authorization.proxy.validator.ResourceAccessValidator.Authorization.denied());
 
     mvc.perform(
             post("/api/config/proxy")
@@ -125,6 +127,20 @@ class ProxyConfigurationControllerErrorTest {
         .andExpect(jsonPath("$.status").value(403))
         .andExpect(jsonPath("$.title").value("Forbidden"))
         .andExpect(jsonPath("$.instance").value("/api/config/proxy"));
+  }
+
+  @Test
+  void returnsVerifiedConflictingAttributesWithoutValues() throws Exception {
+    when(delegatedTokenAuthenticator.authenticate(eq("proxy-jwt"), anyCollection()))
+        .thenReturn(new Outcome.Success(new Result("alice", System.currentTimeMillis())));
+    when(proxyConfigurationService.authorizeUserAccess(any(), eq("alice")))
+        .thenThrow(new org.sitmun.authorization.editing.WfsAttributeDeniedException(java.util.Set.of("{urn:roads}name")));
+    mvc.perform(post("/api/config/proxy").contentType(APPLICATION_JSON)
+        .header(HttpHeaders.AUTHORIZATION, "Bearer proxy-jwt").content(REQUEST))
+        .andExpect(status().isForbidden())
+        .andExpect(content().contentTypeCompatibleWith(APPLICATION_PROBLEM_JSON))
+        .andExpect(jsonPath("$.type").value("https://sitmun.org/problems/wfs-attribute-forbidden"))
+        .andExpect(jsonPath("$.properties.attributes[0]").value("{urn:roads}name"));
   }
 
   @Test
@@ -151,10 +167,11 @@ class ProxyConfigurationControllerErrorTest {
     var coordinates = new RequestCoordinates();
     when(delegatedTokenAuthenticator.authenticate(eq("proxy-jwt"), anyCollection()))
         .thenReturn(new Outcome.Success(new Result("alice", 1_700_000_000_000L)));
-    when(proxyConfigurationService.validateUserAccess(any(), eq("alice"))).thenReturn(true);
+    when(proxyConfigurationService.authorizeUserAccess(any(), eq("alice")))
+        .thenReturn(org.sitmun.authorization.proxy.validator.ResourceAccessValidator.Authorization.granted());
     when(proxyConfigurationService.getRequestCoordinates(any(), eq("alice")))
         .thenReturn(coordinates);
-    when(proxyConfigurationService.getConfiguration(any(), any(Long.class), eq(coordinates)))
+    when(proxyConfigurationService.getConfiguration(any(), any(Long.class), eq(coordinates), any()))
         .thenThrow(new BadRequestException("Invalid proxy configuration"));
 
     mvc.perform(
@@ -169,5 +186,42 @@ class ProxyConfigurationControllerErrorTest {
         .andExpect(jsonPath("$.title").value("Bad Request"))
         .andExpect(jsonPath("$.detail").value("Invalid proxy configuration"))
         .andExpect(jsonPath("$.instance").value("/api/config/proxy"));
+  }
+
+  @Test
+  void passesAuthorizedWfsDestinationSnapshotIntoProxyConfiguration() throws Exception {
+    var coordinates = new RequestCoordinates();
+    var snapshot =
+        new org.sitmun.authorization.editing.WfsEditingPolicy.Destination(
+            "http://authorized.test/wfs", java.util.Map.of("REQUEST", "Transaction"));
+    var captured = new java.util.concurrent.atomic.AtomicReference<
+        org.sitmun.authorization.editing.WfsEditingPolicy.Destination>();
+    when(delegatedTokenAuthenticator.authenticate(eq("proxy-jwt"), anyCollection()))
+        .thenReturn(new Outcome.Success(new Result("alice", 1_700_000_000_000L)));
+    when(proxyConfigurationService.authorizeUserAccess(any(), eq("alice")))
+        .thenReturn(new org.sitmun.authorization.proxy.validator.ResourceAccessValidator.Authorization(
+            true, Optional.of(snapshot)));
+    when(proxyConfigurationService.getRequestCoordinates(any(), eq("alice")))
+        .thenReturn(coordinates);
+    doAnswer(
+            invocation -> {
+              captured.set(invocation.getArgument(3));
+              throw new BadRequestException("stop after capture");
+            })
+        .when(proxyConfigurationService)
+        .getConfiguration(any(), any(Long.class), eq(coordinates), any());
+
+    mvc.perform(
+            post("/api/config/proxy")
+                .contentType(APPLICATION_JSON)
+                .header(HttpHeaders.AUTHORIZATION, "Bearer proxy-jwt")
+                .content(
+                    """
+                    {"appId":1,"terId":2,"type":"WFS","typeId":5,"cartographyId":8,
+                     "method":"POST","parameters":{},"requestBody":"<Transaction/>"}
+                    """))
+        .andExpect(status().isBadRequest());
+
+    org.junit.jupiter.api.Assertions.assertSame(snapshot, captured.get());
   }
 }

@@ -21,6 +21,8 @@ import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.jetbrains.annotations.NotNull;
 import org.sitmun.authorization.access.UserApplicationAccessPolicy;
+import org.sitmun.authorization.editing.WfsAttributeSchema;
+import org.sitmun.authorization.editing.WfsEditingPolicy;
 import org.sitmun.domain.DomainConstants;
 import org.sitmun.domain.application.Application;
 import org.sitmun.domain.application.ApplicationRepository;
@@ -78,6 +80,7 @@ public class AuthorizationService {
   private final TranslationService translationService;
   private final UserApplicationAccessPolicy userApplicationAccessPolicy;
   private final ViewerUsage viewerUsage;
+  private final WfsEditingPolicy wfsEditingPolicy;
 
   public AuthorizationService(
       ApplicationRepository applicationRepository,
@@ -92,7 +95,8 @@ public class AuthorizationService {
       TreeNodeRepository treeNodeRepository,
       TranslationService translationService,
       UserApplicationAccessPolicy userApplicationAccessPolicy,
-      ViewerUsage viewerUsage) {
+      ViewerUsage viewerUsage,
+      WfsEditingPolicy wfsEditingPolicy) {
     this.applicationRepository = applicationRepository;
     this.territoryRepository = territoryRepository;
     this.roleRepository = roleRepository;
@@ -106,6 +110,7 @@ public class AuthorizationService {
     this.translationService = translationService;
     this.userApplicationAccessPolicy = userApplicationAccessPolicy;
     this.viewerUsage = viewerUsage;
+    this.wfsEditingPolicy = wfsEditingPolicy;
   }
 
   /**
@@ -336,7 +341,7 @@ public class AuthorizationService {
 
   @Transactional(readOnly = true)
   public Optional<Profile> createProfile(ProfileContext context) {
-    return buildProfile(context).map(this::pruneProfile);
+    return buildProfile(context);
   }
 
   @NotNull
@@ -388,10 +393,39 @@ public class AuthorizationService {
                 .toList());
     layers.forEach(translationService::updateInternationalization);
 
-    List<Task> tasks =
+    List<Task> candidates =
         findProfileTasks(roles, context.getTerritoryId()).stream()
             .filter(DomainConstants.Tasks::isIncludedInProfile)
             .toList();
+    Set<Integer> readableIds = layers.stream().map(Cartography::getId).collect(Collectors.toSet());
+    Set<Integer> editionLayerIds =
+        candidates.stream()
+            .filter(DomainConstants.Tasks::isCartographyEditionTask)
+            .map(Task::getCartography)
+            .map(Cartography::getId)
+            .filter(readableIds::contains)
+            .collect(Collectors.toSet());
+    Set<Integer> editableIds = new LinkedHashSet<>();
+    Map<Integer, WfsAttributeSchema> schemas = new LinkedHashMap<>();
+    if (!usesPublicCatalog(context.getUsername())) {
+      for (Cartography layer : layers) {
+        if (editionLayerIds.contains(layer.getId())
+            && wfsEditingPolicy.target(
+                    layer, candidates, layers, context.getUsername(),
+                    context.getAppId(), context.getTerritoryId())
+                .isPresent()) {
+          editableIds.add(layer.getId());
+          wfsEditingPolicy.schema(
+                  layer, candidates, layers, context.getUsername(),
+                  context.getAppId(), context.getTerritoryId())
+              .ifPresent(schema -> schemas.put(layer.getId(), schema));
+        }
+      }
+    }
+    List<Task> tasks = candidates.stream()
+        .filter(task -> !DomainConstants.Tasks.isCartographyEditionTask(task)
+            || editableIds.contains(task.getCartography().getId()))
+        .toList();
     tasks.forEach(translationService::updateInternationalization);
 
     List<ApplicationTreeView> treeViews =
@@ -448,7 +482,7 @@ public class AuthorizationService {
     viewerUsage.record(context.getAppId(), filteredServices);
 
     return Optional.of(
-        Profile.builder()
+        pruneProfile(Profile.builder()
             .application(application.get())
             .territory(territory.get())
             .backgrounds(backgrounds)
@@ -460,7 +494,8 @@ public class AuthorizationService {
             .treeNodes(treeNodes)
             .context(context)
             .global(global)
-            .build());
+            .wfsAttributeSchemas(schemas)
+            .build(), editionLayerIds));
   }
 
   private List<TreeNode> pruneNodes(List<TreeNode> nodes, Integer pivotNode) {
@@ -581,7 +616,7 @@ public class AuthorizationService {
    * collections on the profile are treated as read-only snapshots (no {@code removeIf}, {@code
    * setMembers}, or in-place map edits).
    */
-  private Profile pruneProfile(Profile profile) {
+  private Profile pruneProfile(Profile profile, Set<Integer> editionLayerIds) {
 
     Map<Tree, List<TreeNode>> treeNodes = new LinkedHashMap<>();
     profile.getTreeNodes().forEach((tree, nodes) -> treeNodes.put(tree, List.copyOf(nodes)));
@@ -634,12 +669,13 @@ public class AuthorizationService {
             .map(Cartography::getId)
             .collect(Collectors.toUnmodifiableSet());
 
-    Set<Integer> taskLayerIds =
+    Set<Integer> taskLayerIds = new LinkedHashSet<>(editionLayerIds);
+    taskLayerIds.addAll(
         profile.getTasks().stream()
             .map(Task::getCartography)
             .filter(Objects::nonNull)
             .map(Cartography::getId)
-            .collect(Collectors.toUnmodifiableSet());
+            .toList());
 
     Set<Integer> backgroundLayerIds =
         profile.getBackgrounds().stream()

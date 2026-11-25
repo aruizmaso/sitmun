@@ -25,6 +25,7 @@ import org.sitmun.authorization.proxy.protocols.wms.WmsPayloadDto;
 import org.sitmun.authorization.proxy.sql.BoundSql;
 import org.sitmun.authorization.proxy.sql.SqlTaskBinder;
 import org.sitmun.authorization.proxy.validator.ResourceAccessValidator;
+import org.sitmun.authorization.editing.WfsEditingPolicy;
 import org.sitmun.domain.application.ApplicationRepository;
 import org.sitmun.domain.cartography.CartographyRepository;
 import org.sitmun.domain.cartography.parameter.CartographyServiceParameterRepository;
@@ -203,6 +204,49 @@ public class ProxyConfigurationService {
     return ogcPayload;
   }
 
+  private WmsPayloadDto getAuthorizedWfsConfiguration(
+      Service service,
+      ConfigProxyRequestDto request,
+      WfsEditingPolicy.Destination destination) {
+    HttpSecurityDto security =
+        Boolean.TRUE.equals(service.getPasswordSet())
+            ? HttpSecurityDto.builder()
+                .type(SECURITY_SCHEME_TYPE_HTTP)
+                .scheme(OPENAPI_SECURITY_SCHEME_HTTP_BASIC)
+                .username(service.getUser())
+                .password(service.getPassword())
+                .build()
+            : null;
+
+    Map<String, String> parameters =
+        request.getParameters() == null
+            ? new LinkedHashMap<>()
+            : new LinkedHashMap<>(request.getParameters());
+    destination.fixed().forEach((name, value) -> ParameterMaps.put(parameters, name, value));
+
+    List<String> varyParameters =
+        service.getParameters() == null
+            ? List.of()
+            : service.getParameters().stream()
+                .filter(
+                    parameter -> {
+                      ParameterScopes.Rule rule =
+                          ParameterScopes.of(service.getType(), parameter.getType());
+                      return rule != null && rule.kind() == ParameterScopes.Kind.CACHE_VARY;
+                    })
+                .map(org.sitmun.domain.service.parameter.ServiceParameter::getName)
+                .toList();
+
+    return WmsPayloadDto.builder()
+        .uri(destination.endpoint())
+        .method(request.getMethod())
+        .vary(varyParameters)
+        .parameters(parameters)
+        .body(request.getRequestBody())
+        .security(security)
+        .build();
+  }
+
   private List<NamedParameter> layerParameters(
       Service service, ConfigProxyRequestDto request, RequestCoordinates coordinates) {
     Integer cartographyId = request.getCartographyId();
@@ -326,17 +370,22 @@ public class ProxyConfigurationService {
    * request type. An unknown type is denied.
    */
   public boolean validateUserAccess(ConfigProxyRequestDto configProxyRequestDto, String userName) {
+    return authorizeUserAccess(configProxyRequestDto, userName).allowed();
+  }
+
+  public ResourceAccessValidator.Authorization authorizeUserAccess(
+      ConfigProxyRequestDto configProxyRequestDto, String userName) {
     if (userName == null || userName.isBlank()) {
       log.warn("Username is null or blank, denying access");
-      return false;
+      return ResourceAccessValidator.Authorization.denied();
     }
 
     if (userApplicationAccessPolicy.isBlockedAccount(userName)) {
-      return false;
+      return ResourceAccessValidator.Authorization.denied();
     }
     if (userApplicationAccessPolicy.isPrivateAppDeniedForPublic(
         userName, configProxyRequestDto.getAppId())) {
-      return false;
+      return ResourceAccessValidator.Authorization.denied();
     }
 
     String resourceType = configProxyRequestDto.getType();
@@ -351,12 +400,12 @@ public class ProxyConfigurationService {
     return accessValidators.stream()
         .filter(validator -> validator.supports(resourceType))
         .findFirst()
-        .map(validator -> validator.validate(configProxyRequestDto, userName))
+        .map(validator -> validator.authorize(configProxyRequestDto, userName))
         .orElseGet(
             () -> {
               // Deny by default for unknown resource types
               log.warn("No validator found for resource type: {}, denying access", resourceType);
-              return false;
+              return ResourceAccessValidator.Authorization.denied();
             });
   }
 
@@ -376,6 +425,14 @@ public class ProxyConfigurationService {
       ConfigProxyRequestDto configProxyRequestDto,
       long expirationTimeToken,
       RequestCoordinates coordinates) {
+    return getConfiguration(configProxyRequestDto, expirationTimeToken, coordinates, null);
+  }
+
+  public ConfigProxyDto getConfiguration(
+      ConfigProxyRequestDto configProxyRequestDto,
+      long expirationTimeToken,
+      RequestCoordinates coordinates,
+      WfsEditingPolicy.Destination wfsDestination) {
     log.info(
         "Fetching configuration for service type {} with id {}",
         configProxyRequestDto.getType(),
@@ -413,7 +470,11 @@ public class ProxyConfigurationService {
           .findById(configProxyRequestDto.getTypeId())
           .ifPresent(
               service -> {
-                payload.set(getOgcWmsConfiguration(service, configProxyRequestDto, coordinates));
+                 payload.set(
+                     wfsDestination != null
+                         ? getAuthorizedWfsConfiguration(
+                             service, configProxyRequestDto, wfsDestination)
+                         : getOgcWmsConfiguration(service, configProxyRequestDto, coordinates));
                 configType.set(service.getType());
               });
     }

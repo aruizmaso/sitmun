@@ -1,5 +1,7 @@
 package org.sitmun.authorization.proxy.validator;
 
+import java.util.Optional;
+import org.sitmun.authorization.editing.WfsEditingPolicy;
 import org.sitmun.authorization.proxy.dto.ConfigProxyRequestDto;
 
 /**
@@ -25,4 +27,23 @@ public interface ResourceAccessValidator {
    * @return true if the user has access, false otherwise
    */
   boolean validate(ConfigProxyRequestDto request, String userName);
+
+  default Authorization authorize(ConfigProxyRequestDto request, String userName) {
+    return new Authorization(validate(request, userName), Optional.empty());
+  }
+
+  record Authorization(
+      boolean allowed, Optional<WfsEditingPolicy.Destination> wfsDestination) {
+    public Authorization {
+      wfsDestination = wfsDestination == null ? Optional.empty() : wfsDestination;
+    }
+
+    public static Authorization denied() {
+      return new Authorization(false, Optional.empty());
+    }
+
+    public static Authorization granted() {
+      return new Authorization(true, Optional.empty());
+    }
+  }
 }

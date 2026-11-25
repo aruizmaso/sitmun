@@ -20,23 +20,23 @@ import org.sitmun.domain.task.Task;
 import org.sitmun.domain.task.parameter.TaskParameter;
 import org.sitmun.domain.task.parameter.TaskParameterProcessor;
 import org.sitmun.domain.territory.Territory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 @Slf4j
 @Component
 public class TaskEditCartographyService implements TaskMapper {
 
-  @Value("${sitmun.proxy.url:}")
-  private String proxyUrl;
-
   private final DatabaseConnectionService dbConService;
   private final TaskParameterProcessor taskParameterProcessor;
+  private final ProxyMiddlewareUrlResolver proxyUrls;
 
   public TaskEditCartographyService(
-      DatabaseConnectionService dbConService, TaskParameterProcessor taskParameterProcessor) {
+      DatabaseConnectionService dbConService,
+      TaskParameterProcessor taskParameterProcessor,
+      ProxyMiddlewareUrlResolver proxyUrls) {
     this.dbConService = dbConService;
     this.taskParameterProcessor = taskParameterProcessor;
+    this.proxyUrls = proxyUrls;
   }
 
   /**
@@ -80,16 +80,19 @@ public class TaskEditCartographyService implements TaskMapper {
 
     Cartography cartography = task.getCartography();
 
+    String proxyBase = proxyUrls.resolve();
     String url =
         CartographyTaskProfileSupport.putCartographyProxyAndLayerSlots(
-            parametersDto, proxyUrl, application, territory, cartography, paramType);
+            parametersDto, proxyBase, application, territory, cartography, paramType);
     return TaskDto.builder()
         .id(TASK_PROFILE_ID_PREFIX + task.getId())
         .type(EDITION)
         .typeId(task.getType() != null ? task.getType().getId() : null)
+        .scope("feat-edit")
+        .layer(PROFILE_LAYER_ID_PREFIX + cartography.getId())
         .parameters(parametersDto)
         .fields(fields)
-        .url(url)
+        .url(proxyBase.isBlank() ? null : url)
         .build();
   }
 

@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.sitmun.administration.service.database.DatabaseConnectionService;
 import org.sitmun.authorization.client.service.TaskEditCartographyService;
+import org.sitmun.authorization.client.service.ProxyMiddlewareUrlResolver;
 import org.sitmun.domain.DomainConstants;
 import org.sitmun.domain.application.Application;
 import org.sitmun.domain.database.DatabaseConnection;
@@ -21,7 +22,6 @@ import org.sitmun.domain.task.parameter.TaskParameterProcessor;
 import org.sitmun.domain.task.type.TaskType;
 import org.sitmun.domain.territory.Territory;
 import org.sitmun.infrastructure.variables.SystemVariableResolver;
-import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * Edition Mobile (edition-mobile-app) DTO compatibility tests
@@ -51,8 +51,9 @@ class EditionMobileCompatibilityTest {
     SystemVariableResolver mockSystemVariableResolver = mock(SystemVariableResolver.class);
     TaskParameterProcessor taskParameterProcessor =
         new TaskParameterProcessor(mockSystemVariableResolver);
-    service = new TaskEditCartographyService(dbConnectionService, taskParameterProcessor);
-    ReflectionTestUtils.setField(service, "proxyUrl", "http://localhost:8080/middleware");
+    ProxyMiddlewareUrlResolver proxyUrls = mock(ProxyMiddlewareUrlResolver.class);
+    when(proxyUrls.resolve()).thenReturn("http://localhost:8080/middleware");
+    service = new TaskEditCartographyService(dbConnectionService, taskParameterProcessor, proxyUrls);
 
     application = mock(Application.class);
     when(application.getId()).thenReturn(10);
@@ -77,6 +78,8 @@ class EditionMobileCompatibilityTest {
       // Then: URL present (edition-mobile uses this to execute edit operations)
       assertThat(result.getUrl()).isNotNull();
       assertThat(result.getUrl()).isEqualTo("http://localhost:8080/middleware/proxy/10/5/WFS/42/9");
+      assertThat(result.getLayer()).isEqualTo("layer/9");
+      assertThat(result.getScope()).isEqualTo("feat-edit");
     }
 
     @Test

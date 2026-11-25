@@ -2,6 +2,7 @@ package org.sitmun.authorization.client.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.sitmun.domain.DomainConstants.Tasks.FIELDS_NAME;
 import static org.sitmun.domain.DomainConstants.Tasks.PROPERTY_FIELDS;
 
@@ -48,10 +49,13 @@ class TaskEditCartographyServiceTest {
 
   @BeforeEach
   void setUp() {
+    ProxyMiddlewareUrlResolver proxyUrls = mock(ProxyMiddlewareUrlResolver.class);
+    when(proxyUrls.resolve()).thenReturn("http://localhost:8080/middleware");
     service =
         new TaskEditCartographyService(
             mock(DatabaseConnectionService.class),
-            new TaskParameterProcessor(mock(SystemVariableResolver.class)));
+            new TaskParameterProcessor(mock(SystemVariableResolver.class)),
+            proxyUrls);
   }
 
   @Test
