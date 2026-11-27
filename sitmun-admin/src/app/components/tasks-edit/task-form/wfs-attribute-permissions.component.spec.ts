@@ -6,7 +6,7 @@ import {Subject, of, throwError} from 'rxjs';
 import {CartographyService} from '@app/domain';
 import {TaskPropertiesContract} from '@app/domain/task/models/task-properties';
 import {WfsAttributeSchema} from '@app/domain/task/models/wfs-attribute-policy';
-import {WfsAttributePermissionsComponent} from './wfs-attribute-permissions.component';
+import {WfsAttributePermissionsComponent, WfsPermissionHeaderComponent} from './wfs-attribute-permissions.component';
 import {usePermissionGridFixture} from './wfs-permissions-grid.fixture';
 
 describe('WFS attribute permission configuration', () => {
@@ -51,7 +51,8 @@ describe('WFS attribute permission configuration', () => {
     const changed = jest.fn(); fixture.componentInstance.policyChange.subscribe(changed);
     await load();
     const boxes: HTMLInputElement[] = Array.from(fixture.nativeElement.querySelectorAll('input[type=checkbox]'));
-    expect(boxes).toHaveLength(2);
+    // The grid fixture renders cells only; AG Grid renders the two header controls.
+    expect(boxes).toHaveLength(9);
     const rows = fixture.componentInstance.rows;
     expect(rows.find((row) => row.name === 'name')).toMatchObject({editable: true});
     expect(rows.find((row) => row.name === 'id')).toMatchObject({editable: false});
@@ -59,9 +60,10 @@ describe('WFS attribute permission configuration', () => {
     expect(changed).toHaveBeenCalledWith({...saved, extra: 'preserve', obsoleteAttributes: ['{}removed', '{urn:other}name']});
     expect(fixture.componentInstance.obsoleteAttributes).toEqual(['{}removed', '{urn:other}name']);
     expect(fixture.nativeElement.textContent).toContain('Descriptive label');
-    boxes[rows.findIndex((row) => row.name === 'id')].click();
-    expect(changed).toHaveBeenLastCalledWith({version: 1, featureType: schema.featureType,
-      editableAttributes: ['{urn:a}name', '{urn:a}id'], obsoleteAttributes: ['{}removed', '{urn:other}name'], extra: 'preserve'});
+    fixture.componentInstance.toggle(rows.find((row) => row.name === 'id')!, true);
+    expect(changed).toHaveBeenLastCalledWith({version: 2, featureType: schema.featureType,
+      editableAttributes: ['{urn:a}name', '{urn:a}id'], hiddenAttributes: [], generatedAttributes: [],
+      obsoleteAttributes: ['{}removed', '{urn:other}name'], extra: 'preserve'});
     await load();
     expect(fixture.componentInstance.rows.find((row) => row.name === 'id')?.editable).toBe(true);
     expect(fixture.componentInstance.obsoleteAttributes).toEqual(['{}removed', '{urn:other}name']);
@@ -125,13 +127,126 @@ describe('WFS attribute permission configuration', () => {
     const returned = fixture.componentInstance.rows.find((row) => row.identity === '{urn:a}removed')!;
     expect(returned.editable).toBe(false);
     fixture.componentInstance.toggle(returned, true);
-    expect(fixture.componentInstance.policy).toEqual({...saved, editableAttributes: ['{urn:a}removed']});
+    expect(fixture.componentInstance.policy).toEqual({...saved, version: 2, editableAttributes: ['{urn:a}removed'],
+      hiddenAttributes: [], generatedAttributes: []});
+  });
+
+  it.each([7, ['{urn:a}id']])('ignores reserved v2 values in v1 and rebuilds them on migration: %p', async (reserved) => {
+    fixture.componentRef.setInput('policy', {...saved, hiddenAttributes: reserved, generatedAttributes: reserved,
+      obsoleteHiddenAttributes: reserved, extra: 'preserved'});
+    fixture.detectChanges();
+    await load();
+    expect(fixture.componentInstance.error).toBe(false);
+    expect(fixture.componentInstance.rows.find((row) => row.name === 'id')).toMatchObject({visible: true, generated: false});
+    fixture.componentInstance.toggle(fixture.componentInstance.rows.find((row) => row.name === 'id')!, true);
+    expect(fixture.componentInstance.policy).toMatchObject({version: 2, hiddenAttributes: [], generatedAttributes: [], extra: 'preserved'});
+    expect(fixture.componentInstance.policy).not.toHaveProperty('obsoleteHiddenAttributes');
+  });
+
+  it('archives service-generated edit grants and does not restore them when the field becomes ordinary', async () => {
+    await load({...schema, attributes: schema.attributes.map((item) => item.name === 'name' ? {...item, generated: true} : item)});
+    expect(fixture.componentInstance.policy).toMatchObject({editableAttributes: [], obsoleteAttributes: ['{urn:a}name']});
+    await load();
+    const name = fixture.componentInstance.rows.find((row) => row.name === 'name')!;
+    expect(name.editable).toBe(false);
+    fixture.componentInstance.toggle(name, true);
+    expect(fixture.componentInstance.policy).not.toHaveProperty('obsoleteAttributes');
+    await load();
+    expect(fixture.componentInstance.rows.find((row) => row.name === 'name')?.editable).toBe(true);
+  });
+
+  it('keeps obsolete warnings independently until each returning rule is reassigned', async () => {
+    fixture.componentRef.setInput('policy', {version: 2, featureType: schema.featureType,
+      editableAttributes: ['{urn:a}removed'], hiddenAttributes: ['{urn:a}removed'],
+      generatedAttributes: ['{urn:a}removed']});
+    fixture.detectChanges();
+    await load();
+    await load({...schema, attributes: [...schema.attributes,
+      {name: 'removed', namespace: 'urn:a', type: 'string', geometry: false, generated: false}]});
+    const row = fixture.componentInstance.rows.find((item) => item.name === 'removed')!;
+    expect(row).toMatchObject({editable: false, visible: true, generated: false});
+    fixture.componentInstance.setPermission(row, 'visible', false);
+    expect(fixture.componentInstance.policy).not.toHaveProperty('obsoleteHiddenAttributes');
+    expect(fixture.componentInstance.policy).toMatchObject({obsoleteAttributes: ['{urn:a}removed'],
+      obsoleteGeneratedAttributes: ['{urn:a}removed']});
+    fixture.componentInstance.setPermission(row, 'generated', true);
+    expect(fixture.componentInstance.policy).not.toHaveProperty('obsoleteGeneratedAttributes');
+    fixture.componentInstance.setPermission(row, 'visible', true);
+    fixture.componentInstance.setPermission(row, 'editable', true);
+    expect(fixture.componentInstance.policy).not.toHaveProperty('obsoleteAttributes');
+    await load({...schema, attributes: [...schema.attributes,
+      {name: 'removed', namespace: 'urn:a', type: 'string', geometry: false, generated: false}]});
+    expect(fixture.componentInstance.rows.find((item) => item.name === 'removed')?.editable).toBe(true);
   });
 
   it('starts ordinary fields unchecked without a policy and never grants geometry or generated identifiers', async () => {
     fixture.componentRef.setInput('policy', undefined); fixture.detectChanges();
     await load();
-    expect(fixture.componentInstance.rows.map((row) => [row.name, row.editable])).toEqual([['name', false], ['id', false]]);
+    expect(fixture.componentInstance.rows.map((row) => [row.name, row.editable, row.visible, row.generated]))
+      .toEqual([['name', false, true, false], ['id', false, true, false], ['gid', false, true, true]]);
+  });
+
+  it('enforces visibility and generation conflicts and preserves their saved policy', async () => {
+    await load();
+    const component = fixture.componentInstance;
+    const name = component.rows.find((row) => row.name === 'name')!;
+    const gid = component.rows.find((row) => row.name === 'gid')!;
+    component.setPermission(name, 'visible', false);
+    expect(name).toMatchObject({visible: false, editable: false});
+    component.setPermission(name, 'editable', true);
+    expect(name.editable).toBe(false);
+    component.setPermission(name, 'visible', true);
+    component.setPermission(name, 'generated', true);
+    expect(name).toMatchObject({generated: true, editable: false});
+    component.setPermission(name, 'editable', true);
+    expect(name).toMatchObject({generated: false, editable: true});
+    component.setPermission(gid, 'generated', false);
+    component.setPermission(gid, 'editable', true);
+    expect(gid).toMatchObject({generated: true, editable: false, serviceGenerated: true});
+    expect(component.policy).toMatchObject({version: 2, hiddenAttributes: [], generatedAttributes: []});
+  });
+
+  it('applies bulk changes only to filtered eligible rows', async () => {
+    await load();
+    const component = fixture.componentInstance;
+    const name = component.rows.find((row) => row.name === 'name')!;
+    const id = component.rows.find((row) => row.name === 'id')!;
+    component.grid = {gridApi: {forEachNodeAfterFilter: (visit: (node: unknown) => void) =>
+      [name].forEach((data) => visit({data}))}} as any;
+    component.toggleFiltered('visible', false);
+    expect(name).toMatchObject({visible: false, editable: false});
+    expect(id.visible).toBe(true);
+    component.toggleFiltered('editable', true);
+    expect(name.editable).toBe(false);
+    component.toggleFiltered('visible', true);
+    component.setPermission(name, 'generated', true);
+    component.toggleFiltered('editable', true);
+    expect(name).toMatchObject({visible: true, editable: true, generated: false});
+    expect(id.editable).toBe(false);
+  });
+
+  it('does not emit for empty, ineligible or unchanged bulk actions', async () => {
+    await load();
+    const component = fixture.componentInstance;
+    const changed = jest.fn();
+    component.policyChange.subscribe(changed);
+    let rows: typeof component.rows = [];
+    component.grid = {gridApi: {forEachNodeAfterFilter: (visit: (node: unknown) => void) =>
+      rows.forEach((data) => visit({data}))}} as any;
+    component.toggleFiltered('visible', false);
+    rows = [component.rows.find((row) => row.serviceGenerated)!];
+    component.toggleFiltered('editable', true);
+    component.toggleFiltered('visible', true);
+    expect(changed).not.toHaveBeenCalled();
+  });
+
+  it('assigns bulk controls only to the corresponding grid headers', async () => {
+    await load();
+    const columns: any[] = fixture.componentInstance.columns;
+    expect(columns[0].headerComponent).toBe(WfsPermissionHeaderComponent);
+    expect(columns[1].headerComponent).toBe(WfsPermissionHeaderComponent);
+    expect(columns[2].headerComponent).toBeUndefined();
+    expect(fixture.nativeElement.querySelector('app-wfs-attribute-permissions > mat-checkbox')).toBeNull();
   });
 
   it('does not carry a previous task selection into another task on the same cartography', async () => {
@@ -275,5 +390,50 @@ describe('WFS attribute permission configuration', () => {
     expect(updated['other']).toBe(properties.other);
     expect(TaskPropertiesContract.getWfsAttributePolicy(updated)).toEqual(saved);
     expect(properties).not.toHaveProperty('wfsAttributePolicy');
+  });
+});
+
+describe('WFS permission grid header', () => {
+  it('updates its checkbox on filtering and policy changes and removes grid listeners', () => {
+    TestBed.configureTestingModule({imports: [WfsPermissionHeaderComponent], providers: [provideTranslateService()]});
+    const fixture = TestBed.createComponent(WfsPermissionHeaderComponent);
+    const listeners = new Map<string, () => void>();
+    const api = {
+      addEventListener: jest.fn((event: string, listener: () => void) => listeners.set(event, listener)),
+      removeEventListener: jest.fn((event: string) => listeners.delete(event))
+    };
+    const updates = new Subject<boolean>();
+    const column = {getSort: () => null, addEventListener: jest.fn(), removeEventListener: jest.fn()};
+    let all = false;
+    let some = true;
+    const toggle = jest.fn();
+    const eGridHeader = document.createElement('div');
+    fixture.componentInstance.agInit({
+      api, column, eGridHeader, kind: 'visible', displayName: 'Visible', all: () => all, some: () => some,
+      eligible: () => true, toggle, updates
+    } as any);
+    fixture.detectChanges();
+    const checkbox: HTMLInputElement = fixture.nativeElement.querySelector('input[type=checkbox]');
+    expect(checkbox.indeterminate).toBe(true);
+    expect(eGridHeader.getAttribute('aria-checked')).toBe('mixed');
+    eGridHeader.dispatchEvent(new KeyboardEvent('keydown', {key: ' ', bubbles: true}));
+    expect(toggle).toHaveBeenCalledWith('visible', true);
+    expect(fixture.nativeElement.textContent).toContain('Visible');
+    checkbox.click();
+    expect(toggle).toHaveBeenCalledWith('visible', true);
+    all = true;
+    some = false;
+    listeners.get('filterChanged')!();
+    fixture.detectChanges();
+    expect(checkbox.checked).toBe(true);
+    expect(checkbox.indeterminate).toBe(false);
+    all = false;
+    updates.next(true);
+    fixture.detectChanges();
+    expect(checkbox.checked).toBe(false);
+    fixture.destroy();
+    expect(listeners.size).toBe(0);
+    expect(column.removeEventListener).toHaveBeenCalled();
+    expect(updates.observed).toBe(false);
   });
 });

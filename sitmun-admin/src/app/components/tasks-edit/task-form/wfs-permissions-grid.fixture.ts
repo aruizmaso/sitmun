@@ -17,8 +17,10 @@ import {WfsAttributePermissionsComponent, WfsPermissionCheckboxComponent} from '
     <div role="grid">
       @for (row of getAll() | async; track row.identity) {
         <div role="row">
-          <app-wfs-permission-checkbox [params]="$any({data: row, toggle: columnDefs[0].cellRendererParams.toggle})" />
-          @for (column of columnDefs.slice(1); track column.field) {
+          @for (column of columnDefs.slice(0, 3); track column.field) {
+            <app-wfs-permission-checkbox [params]="$any({data: row, kind: column.field, toggle: column.cellRendererParams.toggle})" />
+          }
+          @for (column of columnDefs.slice(3); track column.field) {
             <span role="gridcell">{{ value(column, row) }}</span>
           }
         </div>

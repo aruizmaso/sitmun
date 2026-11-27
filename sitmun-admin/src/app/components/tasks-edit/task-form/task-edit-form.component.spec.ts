@@ -216,7 +216,8 @@ describe('TaskEditFormComponent', () => {
       checkbox.click();
       fixture.detectChanges();
       expect(component.canSaveEntity).toBe(true);
-      const expected = {version: 1, featureType: '{urn:a}roads', editableAttributes: [`{${namespace}}name`]};
+      const expected = {version: 2, featureType: '{urn:a}roads', editableAttributes: [`{${namespace}}name`],
+        hiddenAttributes: [], generatedAttributes: []};
 
       const hiddenGridSave = jest.fn();
       const subscription = component['fieldsTable'].saveCommandEvent$.subscribe(hiddenGridSave);
@@ -267,7 +268,8 @@ describe('TaskEditFormComponent', () => {
       expect(update.request.body.properties.fields).toEqual(fields);
       expect(update.request.body.properties.unknown).toEqual(unknown);
       expect(update.request.body.properties.wfsAttributePolicy).toEqual({
-        version: 1, featureType: '{urn:a}roads', editableAttributes: changePermission ? ['{urn:a}name'] : [],
+        version: changePermission ? 2 : 1, featureType: '{urn:a}roads', editableAttributes: changePermission ? ['{urn:a}name'] : [],
+        ...(changePermission ? {hiddenAttributes: [], generatedAttributes: []} : {}),
         obsoleteAttributes: ['{}removed', '{urn:other}name']
       });
       const persisted = {id: 7, name: 'Road permissions', groupId: 1, cartographyId: 8,
@@ -310,7 +312,8 @@ describe('TaskEditFormComponent', () => {
       checkbox.click();
       fixture.detectChanges();
       expect(component.canSaveEntity).toBe(true);
-      const expected = {version: 1, featureType: '{urn:a}roads', editableAttributes: ['{urn:a}name']};
+      const expected = {version: 2, featureType: '{urn:a}roads', editableAttributes: ['{urn:a}name'],
+        hiddenAttributes: [], generatedAttributes: []};
       const saving = component.onSaveButtonClicked();
       const update = http.expectOne({method: 'PUT', url: '/api/tasks/7'});
       expect(update.request.body.properties).toEqual({...original, wfsAttributePolicy: expected});
