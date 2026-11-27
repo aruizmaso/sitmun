@@ -17,6 +17,23 @@ import org.sitmun.domain.task.Task;
 import org.sitmun.domain.task.type.TaskType;
 
 class WfsAttributePolicyTest {
+  @Test
+  void readsVersionOneWithoutInterpretingReservedVersionTwoValues() {
+    for (Object reserved : List.of(7, List.of("{urn:roads}id"))) {
+      var policy = WfsAttributePolicy.read(Map.of(WfsAttributePolicy.KEY, Map.of(
+          "version", 1, "featureType", "{urn:roads}roads",
+          "editableAttributes", List.of("{urn:roads}id"),
+          "hiddenAttributes", reserved, "generatedAttributes", reserved)));
+      assertNotNull(policy);
+      assertEquals(Set.of("{urn:roads}id"), policy.editableAttributes());
+      assertTrue(policy.hiddenAttributes().isEmpty());
+      assertTrue(policy.generatedAttributes().isEmpty());
+    }
+    assertNull(WfsAttributePolicy.read(Map.of(WfsAttributePolicy.KEY, Map.of(
+        "version", 2, "featureType", "{urn:roads}roads", "editableAttributes", List.of(),
+        "hiddenAttributes", List.of(), "generatedAttributes", 7))));
+  }
+
   static WfsAttributeSchema schema() throws XMLStreamException {
     return schema(true);
   }
@@ -80,12 +97,34 @@ class WfsAttributePolicyTest {
     Task b = task(layer, "{urn:roads}roads", List.of("{urn:roads}id", "{urn:roads}shape"));
     Task wrongType = task(layer, "{urn:other}roads", List.of("{urn:roads}name"));
     assertEquals(Set.of("{urn:roads}name", "{urn:roads}id"),
-        WfsAttributePolicy.effective(layer, List.of(a, b, wrongType), schema()).editableAttributes());
+        WfsAttributePolicy.effective(layer, List.of(a, b), schema()).editableAttributes());
+    assertTrue(WfsAttributePolicy.effective(layer, List.of(a, b, wrongType), schema()).editableAttributes().isEmpty());
     a.setProperties(Map.of("fields", List.of(Map.of("name", "name", "editable", true))));
     assertTrue(WfsAttributePolicy.effective(layer, List.of(a, wrongType), schema()).editableAttributes().isEmpty());
     b.setProperties(Map.of("scope", "db-edit", WfsAttributePolicy.KEY,
         Map.of("version", 1, "featureType", "{urn:roads}roads", "editableAttributes", List.of("{urn:roads}id"))));
     assertTrue(WfsAttributePolicy.effective(layer, List.of(b), schema()).editableAttributes().isEmpty());
+  }
+
+  @Test
+  void combinesVisibilityAndGeneratedPrecedenceAndRejectsManipulatedWrites() throws Exception {
+    var layer = Cartography.builder().id(8).blocked(false)
+        .service(Service.builder().id(5).type("WFS").blocked(false).build()).build();
+    var a = task(layer, "{urn:roads}roads", List.of());
+    a.setProperties(Map.of("scope", "feat-edit", WfsAttributePolicy.KEY, Map.of(
+        "version", 2, "featureType", "{urn:roads}roads",
+        "editableAttributes", List.of(), "hiddenAttributes", List.of("{urn:roads}id"),
+        "generatedAttributes", List.of("{urn:roads}name"))));
+    var b = task(layer, "{urn:roads}roads", List.of("{urn:roads}name", "{urn:roads}id"));
+    var effective = WfsAttributePolicy.effective(layer, List.of(a, b), schema());
+    assertTrue(effective.hiddenAttributes().isEmpty());
+    assertEquals(Set.of("{urn:roads}name", "{urn:roads}gid"), effective.generatedAttributes());
+    assertEquals(Set.of("{urn:roads}id"), effective.editableAttributes());
+    assertEquals(Set.of("{urn:roads}name"), WfsTransaction.forbiddenAttributes(
+        tx("<w:Insert><a:roads><a:name>forged</a:name></a:roads></w:Insert>"), schema(), effective));
+    assertEquals(Set.of("{urn:roads}name"), WfsTransaction.forbiddenAttributes(
+        tx(update("a:name")), schema(), effective));
+    assertEquals(Set.of("{urn:roads}id"), WfsAttributePolicy.effective(layer, List.of(a), schema()).hiddenAttributes());
   }
 
   @Test

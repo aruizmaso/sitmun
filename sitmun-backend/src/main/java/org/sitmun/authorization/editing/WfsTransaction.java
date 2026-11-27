@@ -135,7 +135,8 @@ public final class WfsTransaction {
           for (var property : WfsXml.children(feature)) {
             var matches = schema.attributes().stream().filter(a -> a.identity().equals(WfsXml.name(property))).toList();
             if (matches.size() != 1) throw new XMLStreamException("Unknown inserted property");
-            if (matches.get(0).generated()) forbidden.add(matches.get(0).expandedName());
+            if (matches.get(0).generated() || policy.generatedAttributes().contains(matches.get(0).expandedName()))
+              forbidden.add(matches.get(0).expandedName());
           }
         }
       } else if ("Update".equals(kind)) {
@@ -153,7 +154,8 @@ public final class WfsTransaction {
                   && !WfsXml.name(e).equals(new QName(root.getNamespaceURI(), "Value"))))
             throw new XMLStreamException("Invalid property reference");
           var field = schema.property(names.get(0), names.get(0).getTextContent().trim());
-          if (field.generated() || !field.geometry() && !policy.editableAttributes().contains(field.expandedName()))
+          if (field.generated() || policy.generatedAttributes().contains(field.expandedName())
+              || !field.geometry() && !policy.editableAttributes().contains(field.expandedName()))
             forbidden.add(field.expandedName());
         }
       } else if (!"Delete".equals(kind)) throw new XMLStreamException("Unsupported write");
