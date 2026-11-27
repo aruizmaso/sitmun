@@ -122,6 +122,13 @@ describe('WFS permission preflight', () => {
     layer.sitmunPrepareAttributeTransaction(transaction);
     expect(fetchXML).toHaveBeenCalledTimes(1);
     expect(transaction.getElementsByTagNameNS('urn:a', 'name')[0].textContent).toBe('restored');
+    const invalid = {...source, get: () => ({text: 'not a scalar'})};
+    const rejectInvalid = await layer.sitmunLoadAttributeTransaction([invalid], [], 'geom');
+    const invalidTransaction = parse('<w:Transaction xmlns:w="http://www.opengis.net/wfs" xmlns:a="urn:a">' +
+      '<w:Insert><a:roads><a:geom/></a:roads></w:Insert></w:Transaction>').documentElement;
+    expect(() => rejectInvalid(invalidTransaction)).toThrow('invalidInsertField: {urn:a}name');
+    const nullUpdate = {getKeys: () => ['name'], get: () => null, getGeometryName: () => 'geometry'};
+    expect(await layer.sitmunLoadAttributeTransaction([], [nullUpdate], 'geom')).toBeUndefined();
     fetchXML.mockRejectedValueOnce(new Error('DescribeFeatureType failed'));
     await expect(layer.sitmunLoadAttributeTransaction([source], [], 'geom')).rejects.toThrow('DescribeFeatureType failed');
     await expect(layer.sitmunLoadAttributeTransaction([source], [], 'other')).rejects.toThrow('unverified');

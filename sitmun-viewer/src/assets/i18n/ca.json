@@ -1,6 +1,9 @@
 {
+  "wfsEditing.invalidInsertField": "No es pot sincronitzar l'alta. Obriu el formulari i reviseu aquest camp:",
   "featureAttribute.pendingProtectedChange": "Hi ha un canvi pendent en aquest camp protegit. Es mostra el valor original; el canvi pendent no s’ha descartat.",
   "featureAttribute.protectedField": "La tasca no autoritza modificar aquest atribut en elements existents.",
+  "featureAttribute.generatedField": "Aquest camp no es pot editar perquè està marcat com a autogenerat.",
+  "featureAttribute.nullReadUnknown": "El servei no permet confirmar si el camp és nul o absent. No es marca nul.",
   "featureAttribute.attributeForbidden": "S’ha rebutjat tot el lot per canvis d’atributs no autoritzats. Es conserven els esborranys. Camps conflictius:",
   "featureAttribute.discardRejected": "Descarta expressament els canvis dels camps rebutjats",
   "featureAttribute.localAttributeForbidden": "Alguns canvis del formulari ja no estan autoritzats i encara no s’han aplicat. Camps conflictius:",

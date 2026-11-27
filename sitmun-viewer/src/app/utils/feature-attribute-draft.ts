@@ -16,6 +16,8 @@ export interface AttributeFormField {
   verified?: boolean;
   reasons: string[];
   initialInput?: AttributeInput;
+  provisional?: boolean;
+  readUnknown?: boolean;
 }
 
 /** Includes untouched values: the shared native history still makes a JSON copy. */
@@ -84,6 +86,10 @@ export function fieldUsesJson(field: WfsAttributeField): boolean {
   return field.type === 'complex' || field.type === 'list' || field.maxOccurs !== '1';
 }
 
+export function fieldAllowsNull(field: WfsAttributeField): boolean {
+  return field.nillable && field.fixedValue === null;
+}
+
 export function attributeInput(value: unknown, present: boolean, field?: WfsAttributeField): AttributeInput {
   if (field && fieldUsesJson(field) && value != null) {
     if (field.type === 'list' && typeof value === 'string') value = value.trim() ? value.trim().split(/\s+/) : [];
@@ -101,6 +107,18 @@ const INTEGER_BOUNDS: Record<string, [bigint, bigint]> = {
   long: [-9223372036854775808n, 9223372036854775807n], short: [-32768n, 32767n], byte: [-128n, 127n],
   unsignedLong: [0n, 18446744073709551615n], unsignedInt: [0n, 4294967295n], unsignedShort: [0n, 65535n], unsignedByte: [0n, 255n]
 };
+
+/** An undefined result means the user must supply a value, not an invented default. */
+export function initialWfsAttributeInput(field: WfsAttributeField): AttributeInput | undefined {
+  const declared = field.fixedValue ?? field.defaultValue;
+  if (declared !== null) return attributeInput(declared, true, field);
+  if (fieldUsesJson(field)) return undefined;
+  if (field.type === 'boolean') return {presence: 'value', text: 'false'};
+  if (field.type === 'int' || INTEGER_TYPES.has(field.type ?? '') ||
+      ['decimal', 'float', 'double'].includes(field.type ?? '')) return {presence: 'value', text: '0'};
+  if (['string', 'normalizedString', 'token'].includes(field.type ?? '')) return {presence: 'value', text: ''};
+  return undefined;
+}
 
 /** Exact numeric comparison, without rounding large integers/decimals via Number. */
 function numericKey(text: string): string {
@@ -143,6 +161,37 @@ function parseJsonInput(text: string): unknown {
   return value;
 }
 
+/** Check the basic XSD date syntax and calendar without relying on local time zones. */
+function validDate(text: string): boolean {
+  const match = /^(-?)(\d{4,})-(\d{2})-(\d{2})(Z|[+-]\d{2}:\d{2})?$/.exec(text);
+  if (!match || /^0+$/.test(match[2]) || match[2].length > 4 && match[2].startsWith('0')) return false;
+  const year = BigInt(match[2]);
+  const month = Number(match[3]), day = Number(match[4]);
+  const leap = year % 4n === 0n && (year % 100n !== 0n || year % 400n === 0n);
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (month < 1 || month > 12 || day < 1 || day > days[month - 1]) return false;
+  const zone = match[5];
+  if (zone && zone !== 'Z') {
+    const hours = Number(zone.slice(1, 3)), minutes = Number(zone.slice(4, 6));
+    if (hours > 14 || minutes > 59 || hours === 14 && minutes !== 0) return false;
+  }
+  return true;
+}
+
+function validTime(text: string): boolean {
+  const match = /^(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})?$/.exec(text);
+  if (!match) return false;
+  const hours = Number(match[1]), minutes = Number(match[2]), seconds = Number(match[3]);
+  if (hours > 24 || minutes > 59 || seconds > 59 ||
+      hours === 24 && (minutes !== 0 || seconds !== 0 || /[1-9]/.test(match[4] ?? ''))) return false;
+  const zone = match[5];
+  if (zone && zone !== 'Z') {
+    const offsetHours = Number(zone.slice(1, 3)), offsetMinutes = Number(zone.slice(4, 6));
+    if (offsetHours > 14 || offsetMinutes > 59 || offsetHours === 14 && offsetMinutes !== 0) return false;
+  }
+  return true;
+}
+
 function scalar(field: WfsAttributeField, text: string): string | number | boolean {
   if (!/^[\u0009\u000A\u000D\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]*$/u.test(text)) throw new Error('invalidValue');
   const normalized = text.replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, '');
@@ -169,7 +218,14 @@ function scalar(field: WfsAttributeField, text: string): string | number | boole
   if (field.type === 'decimal' && !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(normalized)) throw new Error('invalidValue');
   if (['float', 'double'].includes(field.type ?? '') &&
       !/^(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|-?INF|NaN)$/.test(normalized)) throw new Error('invalidValue');
-  // Dates, binary lexical values, unions and application-specific simple types
+  if (field.type === 'date' && !validDate(normalized)) throw new Error('invalidValue');
+  if (field.type === 'time' && !validTime(normalized)) throw new Error('invalidValue');
+  if (field.type === 'dateTime') {
+    const parts = normalized.split('T');
+    if (parts.length !== 2 || !validDate(parts[0]) || !/^-?\d{4,}-\d{2}-\d{2}$/.test(parts[0]) ||
+        !validTime(parts[1])) throw new Error('invalidValue');
+  }
+  // Binary lexical values, unions and application-specific simple types
   // stay lexical. Their complete XSD validation belongs to the WFS service.
   return text;
 }
@@ -189,7 +245,7 @@ export function parseAttributeInput(field: WfsAttributeField, input: AttributeIn
     return undefined;
   }
   if (input.presence === 'null') {
-    if (!field.nillable) throw new Error('notNullable');
+    if (!fieldAllowsNull(field)) throw new Error('notNullable');
     return null;
   }
   let value: unknown;

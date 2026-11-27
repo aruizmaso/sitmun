@@ -1,6 +1,9 @@
 {
+  "wfsEditing.invalidInsertField": "The new feature cannot be synchronized. Open the form and check this field:",
   "featureAttribute.pendingProtectedChange": "This protected field has a pending change. The original value is shown; the pending change has not been discarded.",
   "featureAttribute.protectedField": "The task does not authorize modifying this attribute on existing features.",
+  "featureAttribute.generatedField": "This field cannot be edited because it is marked as automatically generated.",
+  "featureAttribute.nullReadUnknown": "The service could not confirm whether this field is null or absent. Null is not selected.",
   "featureAttribute.attributeForbidden": "The entire batch was rejected because of unauthorized attribute changes. Drafts are preserved. Conflicting fields:",
   "featureAttribute.discardRejected": "Explicitly discard changes to rejected fields",
   "featureAttribute.localAttributeForbidden": "Some form changes are no longer authorized and have not been applied. Conflicting fields:",

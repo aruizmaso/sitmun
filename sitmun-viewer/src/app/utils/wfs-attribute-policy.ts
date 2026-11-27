@@ -4,9 +4,11 @@ import {AttributeData, AttributeFormField, attributeValuesEqual} from './feature
 import type {WfsAttributeField} from './wfs-attribute-schema';
 
 export interface WfsAttributePolicy {
-  version: 1;
+  version: 1 | 2;
   featureType: string;
   editableAttributes: string[];
+  hiddenAttributes?: string[];
+  generatedAttributes?: string[];
 }
 export interface VerifiedWfsAttributeSchema {
   featureType: string;
@@ -15,24 +17,39 @@ export interface VerifiedWfsAttributeSchema {
 export interface WfsAttributeAccess {
   schema?: VerifiedWfsAttributeSchema;
   editable: ReadonlySet<string>;
+  hidden?: ReadonlySet<string>;
+  generated?: ReadonlySet<string>;
 }
 
 export const wfsAttributeIdentity = (field: {namespace: string; name: string}): string => `{${field.namespace}}${field.name}`;
+const validIdentities = (value: unknown): value is string[] => Array.isArray(value) && value.length <= 4096 &&
+  value.every((name) => typeof name === 'string' && name.length <= 2048 &&
+    /^\{[^{}]*\}[\p{L}_][\p{L}\p{N}_.-]*$/u.test(name));
 
 export function effectiveWfsAttributeAccess(profile: AppCfg, layer: any): WfsAttributeAccess {
   const tasks = editingTasks(profile, layer);
   const schemas = tasks.map((task) => task.wfsAttributeSchema).filter((schema): schema is VerifiedWfsAttributeSchema => !!schema);
   const schema = schemas[0];
   const editable = new Set<string>();
+  const generated = new Set<string>();
   if (!schema || schemas.some((item) => JSON.stringify(item) !== JSON.stringify(schema))) return {editable};
+  let hidden: Set<string> | undefined;
   for (const task of tasks) {
     const policy = task.wfsAttributePolicy;
-    if (policy?.version === 1 && policy.featureType === schema.featureType && Array.isArray(policy.editableAttributes)) {
+    if ((policy?.version === 1 || policy?.version === 2 && validIdentities(policy.hiddenAttributes) &&
+        validIdentities(policy.generatedAttributes)) && policy.featureType === schema.featureType && validIdentities(policy.editableAttributes)) {
       policy.editableAttributes.forEach((name) => editable.add(name));
+      const taskHidden = new Set(policy.version === 2 ? policy.hiddenAttributes : []);
+      hidden = hidden === undefined ? taskHidden : new Set([...hidden].filter((name) => taskHidden.has(name)));
+      if (policy.version === 2) policy.generatedAttributes?.forEach((name) => generated.add(name));
+    } else {
+      hidden = new Set();
     }
   }
   const allowed = new Set(schema.attributes.filter((field) => !field.geometry && !field.generated).map(wfsAttributeIdentity));
-  return {schema, editable: new Set([...editable].filter((name) => allowed.has(name)))};
+  schema.attributes.filter((field) => field.generated).forEach((field) => generated.add(wfsAttributeIdentity(field)));
+  return {schema, hidden: hidden ?? new Set(), generated,
+    editable: new Set([...editable].filter((name) => allowed.has(name) && !generated.has(name) && !hidden?.has(name)))};
 }
 
 /** Native draft membership wins over generated IDs, including restored provisional inserts. */
@@ -44,13 +61,22 @@ export function isNewWfsFeature(control: any, feature: any): boolean {
 }
 
 export function projectWfsAttributeAccess(fields: AttributeFormField[], access: WfsAttributeAccess,
-  isNew: boolean, readOnlyReason: string): AttributeFormField[] {
-  return fields.filter((field) => !field.schema || !access.schema?.attributes.some((attribute) =>
-    wfsAttributeIdentity(attribute) === wfsAttributeIdentity(field.schema!) && attribute.generated)).map((field) => {
+  isNew: boolean, readOnlyReason: string, generatedReason = readOnlyReason): AttributeFormField[] {
+  return fields.filter((field) => {
+    if (!field.schema) return true;
+    const identity = wfsAttributeIdentity(field.schema);
+    const generated = access.generated?.has(identity) || access.schema?.attributes.some((item) =>
+      wfsAttributeIdentity(item) === identity && item.generated);
+    return isNew && !generated || !access.hidden?.has(identity);
+  }).map((field) => {
     const identity = field.schema ? wfsAttributeIdentity(field.schema) : '';
-    const verified = access.schema?.attributes.some((attribute) => !attribute.geometry && !attribute.generated && wfsAttributeIdentity(attribute) === identity);
+    const generated = !!field.schema && (!!access.generated?.has(identity) ||
+      access.schema?.attributes.some((attribute) => attribute.generated && wfsAttributeIdentity(attribute) === identity));
+    const verified = !generated && access.schema?.attributes.some((attribute) => !attribute.geometry && !attribute.generated && wfsAttributeIdentity(attribute) === identity);
     const editable = !!verified && (isNew || access.editable.has(identity));
-    return editable ? field : {...field, editable: false, initialInput: undefined, reasons: [...field.reasons, readOnlyReason]};
+    if (editable) return field;
+    const reason = generated ? generatedReason : readOnlyReason;
+    return {...field, editable: false, initialInput: undefined, reasons: [...new Set([...field.reasons, reason])]};
   });
 }
 
@@ -99,7 +125,7 @@ export function enforceWfsAttributeTransaction(transaction: Element, access: Wfs
           const field = exact.length === 1 ? exact[0] : local.length === 1 && local[0].namespace === '' &&
             property.namespaceURI === feature.namespaceURI ? local[0] : undefined;
           if (!field) throw new Error('unverified');
-          if (field.generated) property.remove();
+          if (field.generated || access.generated?.has(wfsAttributeIdentity(field))) property.remove();
           else if (field.namespace !== (property.namespaceURI ?? '')) {
             const replacement = transaction.ownerDocument.createElementNS(field.namespace || null, field.name);
             for (const attribute of Array.from(property.attributes)) {
@@ -124,7 +150,8 @@ export function enforceWfsAttributeTransaction(transaction: Element, access: Wfs
         if (key.includes(':') && !reference?.lookupNamespaceURI(key.split(':')[0])) {
           reference?.setAttributeNS('http://www.w3.org/2000/xmlns/', `xmlns:${key.split(':')[0]}`, field.namespace);
         }
-        if (field.generated || !field.geometry && !access.editable.has(wfsAttributeIdentity(field))) denied.add(wfsAttributeIdentity(field));
+        if (field.generated || access.generated?.has(wfsAttributeIdentity(field)) ||
+            !field.geometry && !access.editable.has(wfsAttributeIdentity(field))) denied.add(wfsAttributeIdentity(field));
       }
     }
   }

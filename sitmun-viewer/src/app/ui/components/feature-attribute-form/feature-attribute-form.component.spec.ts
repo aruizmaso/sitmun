@@ -35,6 +35,66 @@ describe('FeatureAttributeFormComponent', () => {
     expect(component.dirty).toBe(false);
   });
 
+  it('offers null only for nullable fields and restores the typed value when unchecked', () => {
+    const nullable = field();
+    nullable.schema = {...nullable.schema!, nillable: true};
+    fixture.componentRef.setInput('fields', [nullable]);
+    fixture.detectChanges();
+    const text: HTMLTextAreaElement = fixture.nativeElement.querySelector('textarea.attribute-value');
+    text.value = 'draft';
+    text.dispatchEvent(new Event('input'));
+    const checkbox: HTMLInputElement = fixture.nativeElement.querySelector('input[type=checkbox]');
+    checkbox.click();
+    fixture.detectChanges();
+    expect(component.rows[0].group.controls.presence.value).toBe('null');
+    checkbox.click();
+    fixture.detectChanges();
+    expect(component.rows[0].group.controls.text.value).toBe('draft');
+    expect(component.rows[0].group.controls.presence.value).toBe('value');
+    expect(fixture.nativeElement.querySelector('.attribute-presence')).toBeNull();
+  });
+
+  it.each(['A', ''])('does not offer null for a nillable fixed value %j', (fixedValue) => {
+    const fixed = field({value: fixedValue});
+    fixed.schema = {...fixed.schema!, nillable: true, fixedValue};
+    fixture.componentRef.setInput('fields', [fixed]);
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('input[type=checkbox]')).toBeNull();
+  });
+
+  it('restores an untouched absent field when null is checked and unchecked', () => {
+    const absent = field({value: undefined, present: false});
+    absent.schema = {...absent.schema!, nillable: true};
+    fixture.componentRef.setInput('fields', [absent]);
+    fixture.detectChanges();
+    const checkbox: HTMLInputElement = fixture.nativeElement.querySelector('input[type=checkbox]');
+    checkbox.click();
+    checkbox.click();
+    expect(component.rows[0].group.controls.presence.value).toBe('absent');
+    expect(component.dirty).toBe(false);
+  });
+
+  it('shows omitted GML values as unknown without selecting null, and hides the warning when edited', () => {
+    const unknown = field({value: undefined, present: false, readUnknown: true});
+    unknown.schema = {...unknown.schema!, minOccurs: '0', nillable: true};
+    fixture.componentRef.setInput('fields', [unknown]);
+    fixture.detectChanges();
+    const checkbox: HTMLInputElement = fixture.nativeElement.querySelector('input[type=checkbox]');
+    expect(checkbox.checked).toBe(false);
+    expect(fixture.nativeElement.querySelector('.attribute-read-unknown[role=status]').textContent)
+      .toContain('featureAttribute.nullReadUnknown');
+    checkbox.click();
+    checkbox.click();
+    fixture.detectChanges();
+    expect(component.dirty).toBe(false);
+    expect(fixture.nativeElement.querySelector('.attribute-read-unknown[role=status]').textContent)
+      .toContain('featureAttribute.nullReadUnknown');
+    component.rows[0].group.controls.text.setValue('repaired');
+    fixture.detectChanges();
+    expect(fixture.nativeElement.querySelector('.attribute-read-unknown[role=status]')).toBeNull();
+    expect(component.dirty).toBe(true);
+  });
+
   it('enables Apply and emits a valid draft without a global write gate', () => {
     const apply = jest.spyOn(component.apply, 'emit');
     component.rows[0].group.controls.text.setValue('new');
@@ -144,7 +204,7 @@ describe('FeatureAttributeFormComponent', () => {
     fixture.detectChanges();
     expect(component.dirty).toBe(false);
     expect(component.rows.map((row) => row.group.controls.presence.value)).toEqual(['absent', 'absent']);
-    expect(fixture.nativeElement.querySelectorAll('textarea.attribute-value')).toHaveLength(0);
+    expect(fixture.nativeElement.querySelectorAll('textarea.attribute-value')).toHaveLength(2);
     const apply = jest.spyOn(component.apply, 'emit');
     component.rows[0].group.setValue({ presence: 'value', text: 'new name' });
     component.submit(new Event('submit'));
@@ -202,13 +262,13 @@ describe('FeatureAttributeFormComponent', () => {
     expect(component.dirty).toBe(false);
   });
 
-  it('focuses the invalid presence control independently of translated labels', () => {
+  it('focuses the invalid value control independently of translated labels', () => {
     fixture.detectChanges();
     document.body.append(fixture.nativeElement);
     component.rows[0].group.controls.presence.setValue('absent');
     component.submit(new Event('submit'));
     expect(component.rows[0].error).toBe('required');
-    expect(document.activeElement).toBe(fixture.nativeElement.querySelector('#attribute-presence-0'));
+    expect(document.activeElement).toBe(fixture.nativeElement.querySelector('#attribute-value-0'));
     fixture.nativeElement.remove();
   });
 

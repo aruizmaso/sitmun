@@ -27,6 +27,8 @@ fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 legend { padding: 0; margin-bottom: 4px; font-size: 17px; font-weight: 650; }
 .attribute-help { margin: 0 0 12px; color: #526275; font-size: 12px; }
 .attribute-help p { margin: 4px 0 0; }
+.attribute-read-unknown { text-align: center; }
+.attribute-inputs > .attribute-read-unknown { order: -1; flex: 0 0 100%; }
 .attribute-field {
   min-width: 0;
   margin: 0 0 12px;
@@ -53,7 +55,9 @@ legend { padding: 0; margin-bottom: 4px; font-size: 17px; font-weight: 650; }
   font: inherit;
   line-height: 1.4;
 }
-.attribute-presence { flex: 0 1 125px; }
+.attribute-field label.attribute-null { display: inline-flex; align-items: center; gap: 6px; margin: 0; }
+:host .attribute-null input { display: inline-block; min-height: 0; width: 18px; height: 18px; padding: 0; }
+.attribute-value-container { flex: 1 1 180px; }
 .attribute-value { flex: 1 1 180px; width: 100%; }
 :host textarea { width: 100%; resize: vertical; white-space: pre-wrap; overflow-wrap: anywhere; }
 :host textarea[readonly] { background: #edf1f5; border-color: #d0d8e1; color: #47596b; }
@@ -95,6 +99,6 @@ legend { padding: 0; margin-bottom: 4px; font-size: 17px; font-weight: 650; }
 :host button:disabled, :host fieldset:disabled { opacity: .65; }
 :host button:disabled { cursor: not-allowed; }
 @container (max-width: 300px) {
-  .attribute-presence, .attribute-value { flex-basis: 100%; width: 100%; }
+  .attribute-value-container, .attribute-value { flex-basis: 100%; width: 100%; }
   .attribute-actions button { flex: 1 1 100%; }
 }

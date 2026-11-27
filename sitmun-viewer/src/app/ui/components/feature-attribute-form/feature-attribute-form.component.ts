@@ -8,7 +8,7 @@ import { Subscription } from 'rxjs';
 
 import {
   AttributeFormField, AttributeInput, AttributePresence, attributeInput,
-  parseAttributeInput, attributeValuesEqual, attributeScalarValue, fieldUsesJson
+  parseAttributeInput, attributeValuesEqual, attributeScalarValue, fieldUsesJson, fieldAllowsNull
 } from '../../../utils/feature-attribute-draft';
 
 type AttributeControls = {
@@ -20,6 +20,7 @@ interface FieldRow {
   group: FormGroup<AttributeControls>;
   initial: AttributeInput;
   error: string;
+  beforeNull?: AttributePresence;
 }
 
 @Component({
@@ -69,23 +70,24 @@ interface FieldRow {
             @for (row of rows; track row.field.name; let index = $index) {
               <div class="attribute-field" [class.attribute-field-readonly]="!row.field.editable">
                 @if (row.field.editable) {
-                  <label [for]="row.group.controls.presence.value === 'value' ? 'attribute-value-' + index : 'attribute-presence-' + index">
+                  <label [for]="'attribute-value-' + index">
                     {{ label(row.field) }}
                     @if (row.field.schema?.minOccurs === '1') { <span class="attribute-required" aria-hidden="true">*</span> }
                   </label>
                   <div class="attribute-inputs">
-                  <select [id]="'attribute-presence-' + index" [formControl]="row.group.controls.presence"
-                    class="attribute-presence"
-                    [attr.aria-invalid]="row.error && row.group.controls.presence.value !== 'value' ? 'true' : null"
-                    [attr.aria-describedby]="'attribute-error-' + index"
-                    [attr.aria-label]="('featureAttribute.presence' | translate) + ' ' + label(row.field)">
-                    @if (!row.field.present) {
-                      <option value="absent">{{ 'featureAttribute.absent' | translate }}</option>
-                    }
-                    @if (row.field.schema?.nillable) { <option value="null">null</option> }
-                    <option value="value">{{ 'featureAttribute.value' | translate }}</option>
-                  </select>
-                  @if (row.group.controls.presence.value === 'value') {
+                  @if (allowsNull(row.field)) {
+                    <label class="attribute-null">
+                      <input type="checkbox" [checked]="row.group.controls.presence.value === 'null'"
+                        [attr.aria-label]="'null ' + label(row.field)"
+                        (change)="toggleNull(row, $any($event.target).checked)" /> null
+                    </label>
+                  }
+                  @if (isReadUnknown(row)) {
+                    <p class="attribute-help attribute-read-unknown" role="status">
+                      {{ 'featureAttribute.nullReadUnknown' | translate }}
+                    </p>
+                  }
+                  <fieldset class="attribute-value-container" [disabled]="row.group.controls.presence.value === 'null'">
                     @if (!usesJson(row.field) && (enumerations(row.field).length > 0 || row.field.schema?.type === 'boolean')) {
                       <select [id]="'attribute-value-' + index" [formControl]="row.group.controls.text"
                         class="attribute-value" [attr.aria-required]="row.field.schema?.minOccurs === '1'"
@@ -105,7 +107,7 @@ interface FieldRow {
                         [attr.inputmode]="row.field.schema?.type === 'int' ? 'numeric' : 'text'"
                         [attr.aria-invalid]="row.error ? 'true' : null" [attr.aria-describedby]="'attribute-error-' + index" />
                     }
-                  }
+                  </fieldset>
                   </div>
                   <p [id]="'attribute-error-' + index" class="error">
                     @if (row.error) { {{ ('featureAttribute.' + row.error) | translate }} }
@@ -117,6 +119,11 @@ interface FieldRow {
                   </div>
                   <textarea readonly rows="2" [id]="'attribute-readonly-' + index" [value]="display(row.field)"
                     [attr.aria-describedby]="'attribute-reason-' + index"></textarea>
+                  @if (row.field.readUnknown) {
+                    <p class="attribute-help attribute-read-unknown" role="status">
+                      {{ 'featureAttribute.nullReadUnknown' | translate }}
+                    </p>
+                  }
                   <div class="attribute-help" [id]="'attribute-reason-' + index">
                   @for (reason of row.field.reasons; track reason) { <p>{{ reason }}</p> }
                   </div>
@@ -184,7 +191,15 @@ export class FeatureAttributeFormComponent implements OnChanges, OnDestroy {
         presence: new FormControl(initial.presence, { nonNullable: true }),
         text: new FormControl(initial.text, { nonNullable: true })
       });
-      const row: FieldRow = { field, group, initial, error: '' };
+      let error = '';
+      if (field.initialInput && field.schema) {
+        try { parseAttributeInput(field.schema, field.initialInput); }
+        catch (failure) { error = failure instanceof Error ? failure.message : 'invalidValue'; }
+      }
+      const row: FieldRow = { field, group, initial, error };
+      this.subscriptions.push(group.controls.text.valueChanges.subscribe(() => {
+        if (group.controls.presence.value === 'absent') group.controls.presence.setValue('value');
+      }));
       this.subscriptions.push(group.valueChanges.subscribe(() => this.updateDirty()));
       return row;
     });
@@ -198,6 +213,21 @@ export class FeatureAttributeFormComponent implements OnChanges, OnDestroy {
   label(field: AttributeFormField): string { return field.name.split(':').at(-1)!; }
   get conflictLabels(): string { return this.conflictNames.join(', '); }
   usesJson(field: AttributeFormField): boolean { return !!field.schema && fieldUsesJson(field.schema); }
+  allowsNull(field: AttributeFormField): boolean { return !!field.schema && fieldAllowsNull(field.schema); }
+  isReadUnknown(row: FieldRow): boolean {
+    return row.field.readUnknown === true && row.group.controls.presence.value === row.initial.presence &&
+      row.group.controls.text.value === row.initial.text;
+  }
+
+  toggleNull(row: FieldRow, checked: boolean): void {
+    if (checked) {
+      row.beforeNull = row.group.controls.presence.value;
+      row.group.controls.presence.setValue('null');
+    } else {
+      row.group.controls.presence.setValue(row.beforeNull === 'absent' ? 'absent' : 'value');
+      row.beforeNull = undefined;
+    }
+  }
 
   options(field: AttributeFormField): string[] {
     const values = this.enumerations(field);
@@ -247,10 +277,12 @@ export class FeatureAttributeFormComponent implements OnChanges, OnDestroy {
         return (value !== undefined) !== row.field.present || !attributeValuesEqual(row.field.schema, value, row.field.value);
       } catch {
         const input = row.group.getRawValue();
-        return input.presence !== row.initial.presence || input.text !== row.initial.text;
+        return input.presence !== row.initial.presence || input.text !== row.initial.text ||
+          !row.field.present && input.presence !== 'absent';
       }
     });
     this.dirtyChanged.emit(this.dirty);
+    this.changeDetector.markForCheck();
   }
 
   submit(event: Event): void {
@@ -262,7 +294,13 @@ export class FeatureAttributeFormComponent implements OnChanges, OnDestroy {
       if (!row.field.editable || !row.field.schema) continue;
       const input = row.group.getRawValue();
       row.error = '';
-      // Unchanged optional/required absent fields are validated too on Apply.
+      // Existing absence is not a write, but required fields must still be
+      // supplied before Apply; optional absence parses to undefined and merges as a no-op.
+      if (row.field.provisional && input.presence === 'absent') {
+        row.error = 'required';
+        invalid = true;
+        continue;
+      }
       try { parseAttributeInput(row.field.schema, input); }
       catch (error) { row.error = error instanceof Error ? error.message : 'invalidValue'; invalid = true; }
       inputs.set(row.field.name, input);
@@ -270,10 +308,7 @@ export class FeatureAttributeFormComponent implements OnChanges, OnDestroy {
     if (invalid) {
       this.changeDetector.detectChanges();
       const rowIndex = this.rows.findIndex((row) => !!row.error);
-      const invalidRow = this.rows[rowIndex];
-      const selector = invalidRow?.group.controls.presence.value === 'value'
-        ? `#attribute-value-${rowIndex}`
-        : `#attribute-presence-${rowIndex}`;
+      const selector = `#attribute-value-${rowIndex}`;
       this.host.nativeElement.querySelector<HTMLElement>(selector)?.focus();
       return;
     }

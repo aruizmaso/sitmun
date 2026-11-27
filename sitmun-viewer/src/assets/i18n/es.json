@@ -1,6 +1,9 @@
 {
+  "wfsEditing.invalidInsertField": "No se puede sincronizar el alta. Abra el formulario y revise este campo:",
   "featureAttribute.pendingProtectedChange": "Hay un cambio pendiente en este campo protegido. Se muestra el valor original; el cambio pendiente no se ha descartado.",
   "featureAttribute.protectedField": "La tarea no autoriza modificar este atributo en elementos existentes.",
+  "featureAttribute.generatedField": "Este campo no se puede editar porque está marcado como autogenerado.",
+  "featureAttribute.nullReadUnknown": "El servicio no permite confirmar si el campo es nulo o está ausente. No se marca nulo.",
   "featureAttribute.attributeForbidden": "Se ha rechazado todo el lote por cambios de atributos no autorizados. Se conservan los borradores. Campos conflictivos:",
   "featureAttribute.discardRejected": "Descartar expresamente los cambios de los campos rechazados",
   "featureAttribute.localAttributeForbidden": "Algunos cambios del formulario ya no están autorizados y aún no se han aplicado. Campos en conflicto:",

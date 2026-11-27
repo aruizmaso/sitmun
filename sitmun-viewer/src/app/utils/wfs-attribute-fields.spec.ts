@@ -186,6 +186,17 @@ describe('schema/native attribute field mapping', () => {
     expect(data).toEqual({ 'alias:category': 'food' });
   });
 
+  it('marks an omitted value unknown only when the authorized read could not distinguish null from absence', () => {
+    const absent = attributeFormFields(schema(), {}, {attributes: [{name: 'category'}]}, false, text,
+      false, [], new Set(['{urn:app}category']));
+    expect(absent[0]).toMatchObject({present: false, value: undefined, readUnknown: true, editable: true});
+    const explicitNull = attributeFormFields(schema(), {category: null}, {attributes: [{name: 'category'}]}, false, text,
+      false, [], new Set(['{urn:app}category']));
+    expect(explicitNull[0]).toMatchObject({present: true, value: null, readUnknown: false});
+    const knownAbsent = attributeFormFields(schema(), {}, {attributes: [{name: 'category'}]}, false, text);
+    expect(knownAbsent[0]).toMatchObject({present: false, readUnknown: false});
+  });
+
   it('supports unique JSON local keys without confusing two namespaces with the same local name', () => {
     expect(attributeFormFields(schema(), { category: 'food' }, { attributes: [{ name: 'category' }] }, false, text)[0].editable).toBe(true);
     const collision = schema([definition(), definition('category', { namespace: 'urn:other' })]);

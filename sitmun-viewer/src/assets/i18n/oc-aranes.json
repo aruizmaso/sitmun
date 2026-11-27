@@ -1,6 +1,9 @@
 {
+  "wfsEditing.invalidInsertField": "Non se pòt sincronizar eth nau element. Dubrissètz eth formulari e revisatz aguest camp:",
   "featureAttribute.pendingProtectedChange": "I a un cambi pendent en aguest camp protegit. Se mòstre eth valor originau; eth cambi pendent non s’a descartat.",
   "featureAttribute.protectedField": "Eth prètzhèt non autorize modificar aguest atribut en elements existents.",
+  "featureAttribute.generatedField": "Aguest camp non se pòt editar perque ei marcat coma autogenerat.",
+  "featureAttribute.nullReadUnknown": "Eth servici non permet confirmar se eth camp ei nul o absent. Nul non ei seleccionat.",
   "featureAttribute.attributeForbidden": "S’a refusat tot eth lòt per cambis d’atributs non autorizadi. Se consèrven es borrolhons. Camps en conflicte:",
   "featureAttribute.discardRejected": "Descarta exprèssament es cambis des camps refusadi",
   "featureAttribute.localAttributeForbidden": "Quauqui cambis deth formulari ja non son autorizadi e encara non s’an aplicat. Camps en conflicte:",

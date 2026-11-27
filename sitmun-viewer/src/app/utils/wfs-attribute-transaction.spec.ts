@@ -23,7 +23,10 @@ describe('structured WFS attribute serialization', () => {
     });
     if (!(node instanceof Element)) throw new Error('Expected a WFS transaction element');
     const before = JSON.stringify(properties);
-    serializeWfsAttributeTransaction(node, inserting ? [feature] : [], inserting ? [] : [feature], definition);
+    const selected = inserting && definition === schema
+      ? {...definition, fields: definition.fields.filter((item) => item.name === 'geometry' || Object.hasOwn(properties, item.name))}
+      : definition;
+    serializeWfsAttributeTransaction(node, inserting ? [feature] : [], inserting ? [] : [feature], selected);
     expect(JSON.stringify(properties)).toBe(before);
     expect(feature.getGeometry()?.getCoordinates()).toEqual([1, 2]);
     expect(feature.getId()).toBe('items.1');
@@ -59,14 +62,14 @@ describe('structured WFS attribute serialization', () => {
     }
   });
 
-  it('inserts explicit nulls in schema order, without inventing absent fields or changing empty/false/zero', () => {
+  it('inserts explicit nulls and initializes absent scalar fields in schema order', () => {
     const nullable = { ...schema, fields: [field('first', 'string'), field('geometry', 'complex'),
       field('middle', 'string'), field('empty', 'string'), field('enabled', 'boolean'), field('count', 'int'),
       field('last', 'string'), field('absent', 'string')] };
     const node = transaction({ count: 0, last: null, empty: '', enabled: false, first: null, middle: null }, true, nullable);
     const inserted = node.getElementsByTagNameNS('urn:app', 'items')[0];
     expect(Array.from(inserted.children).map((child) => child.localName))
-      .toEqual(['first', 'geometry', 'middle', 'empty', 'enabled', 'count', 'last']);
+      .toEqual(['first', 'geometry', 'middle', 'empty', 'enabled', 'count', 'last', 'absent']);
     for (const name of ['first', 'middle', 'last']) {
       expect(inserted.getElementsByTagNameNS('urn:app', name)[0]
         .getAttributeNS('http://www.w3.org/2001/XMLSchema-instance', 'nil')).toBe('true');
@@ -74,8 +77,37 @@ describe('structured WFS attribute serialization', () => {
     expect(inserted.getElementsByTagNameNS('urn:app', 'empty')[0].textContent).toBe('');
     expect(inserted.getElementsByTagNameNS('urn:app', 'enabled')[0].textContent).toBe('false');
     expect(inserted.getElementsByTagNameNS('urn:app', 'count')[0].textContent).toBe('0');
-    expect(inserted.getElementsByTagNameNS('urn:app', 'absent')).toHaveLength(0);
+    expect(inserted.getElementsByTagNameNS('urn:app', 'absent')[0].textContent).toBe('');
     expect(inserted.getElementsByTagNameNS('http://www.opengis.net/gml', 'Point')).toHaveLength(1);
+  });
+
+  it('applies fixed and simple defaults without opening the form and requires unknown values', () => {
+    const definition = {...schema, fields: [field('geometry', 'complex'),
+      field('fixed', 'string', {fixedValue: 'locked', defaultValue: 'ignored'}),
+      field('count', 'int'), field('enabled', 'boolean'), field('name', 'string')]};
+    const node = transaction({}, true, definition);
+    const inserted = node.getElementsByTagNameNS('urn:app', 'items')[0];
+    expect(inserted.getElementsByTagNameNS('urn:app', 'fixed')[0].textContent).toBe('locked');
+    expect(inserted.getElementsByTagNameNS('urn:app', 'count')[0].textContent).toBe('0');
+    expect(inserted.getElementsByTagNameNS('urn:app', 'enabled')[0].textContent).toBe('false');
+    expect(inserted.getElementsByTagNameNS('urn:app', 'name')[0].textContent).toBe('');
+    expect(() => transaction({}, true, {...definition, fields: [...definition.fields, field('day', 'date')]}))
+      .toThrow('required');
+    expect(() => transaction({}, true, {...definition, fields: [...definition.fields,
+      field('positive', 'positiveInteger')]})).toThrow('invalidValue');
+  });
+
+  it('omits generated fields even when the native insert contains a value', () => {
+    const definition = {...schema, fields: [field('geometry', 'complex'), field('id', 'int'),
+      field('name', 'string')]};
+    const feature = new Feature(new Point([1, 2]));
+    feature.setProperties({id: 99, name: 'example'});
+    const node = new WFS().writeTransaction([new Feature(feature.getGeometry()!.clone())], [], [], {
+      featurePrefix: 'app', featureNS: 'urn:app', featureType: 'items', nativeElements: []
+    }) as Element;
+    serializeWfsAttributeTransaction(node, [feature], [], definition, undefined, new Set(['{urn:app}id']));
+    expect(node.getElementsByTagNameNS('urn:app', 'id')).toHaveLength(0);
+    expect(node.getElementsByTagNameNS('urn:app', 'name')[0].textContent).toBe('example');
   });
 
   it('replaces native nodes for unqualified structured fields and preserves the geometry element intact', () => {
@@ -126,12 +158,54 @@ describe('structured WFS attribute serialization', () => {
     expect(() => transaction({ details: 'one', 'app:details': 'two' }, true)).toThrow('unverified');
   });
 
-  it('preserves native Update null semantics and keeps the external fid separate from the data id', () => {
+  it('serializes updated nulls without Value and keeps the external fid separate from the data id', () => {
     const node = transaction({ id: 'new-data-id', details: null }, false);
     const properties = Array.from(node.getElementsByTagNameNS('http://www.opengis.net/wfs', 'Property'));
     expect(properties.find((property) => property.children[0].textContent === 'id')?.children[1].textContent).toBe('new-data-id');
-    expect(properties.find((property) => property.children[0].textContent === 'details')?.children).toHaveLength(1);
+    expect(properties.find((property) => property.children[0].textContent === 'details')
+      ?.getElementsByTagNameNS('http://www.opengis.net/wfs', 'Value')).toHaveLength(0);
     expect(node.getElementsByTagNameNS('http://www.opengis.net/ogc', 'FeatureId')[0].getAttribute('fid')).toBe('items.1');
+  });
+
+  it('keeps null, empty and absent distinct in a mixed WFS 1.1 batch', () => {
+    const definition = {...schema, fields: [field('geometry', 'complex'), field('details', 'complex'),
+      field('empty', 'string'), field('absent', 'string')]};
+    const insert = new Feature(new Point([1, 2]));
+    insert.setProperties({details: null, empty: ''});
+    const update = new Feature(new Point([3, 4]));
+    update.setId('items.42');
+    update.setProperties({details: null, empty: ''});
+    const node = new WFS().writeTransaction([new Feature(insert.getGeometry()!.clone())], [update], [], {
+      featurePrefix: 'app', featureNS: 'urn:app', featureType: 'items', nativeElements: []
+    }) as Element;
+    serializeWfsAttributeTransaction(node, [insert], [update], definition);
+    const operation = node.getElementsByTagNameNS('http://www.opengis.net/wfs', 'Update')[0];
+    const properties = Array.from(operation.children).filter((child) => child.localName === 'Property');
+    const property = (name: string) => properties.find((item) => item.children[0].textContent === name);
+    expect(property('details')?.getElementsByTagNameNS('http://www.opengis.net/wfs', 'Value')).toHaveLength(0);
+    expect(property('empty')?.getElementsByTagNameNS('http://www.opengis.net/wfs', 'Value')).toHaveLength(1);
+    expect(property('absent')).toBeUndefined();
+    expect(operation.getElementsByTagNameNS('http://www.opengis.net/ogc', 'FeatureId')[0].getAttribute('fid')).toBe('items.42');
+    expect(node.getElementsByTagNameNS('urn:app', 'details')[0]
+      .getAttributeNS('http://www.w3.org/2001/XMLSchema-instance', 'nil')).toBe('true');
+  });
+
+  it('rejects scalar objects and arrays on insert while preserving long lexical values', () => {
+    const definition = {...schema, fields: [field('geometry', 'complex'), field('name', 'string'), field('large', 'long')]};
+    for (const name of [{text: 'A'}, ['A']]) {
+      expect(() => transaction({name, large: '9223372036854775807'}, true, definition))
+        .toThrow('invalidInsertField: {urn:app}name');
+    }
+    const node = transaction({name: '', large: '9223372036854775807'}, true, definition);
+    expect(node.getElementsByTagNameNS('urn:app', 'large')[0].textContent).toBe('9223372036854775807');
+  });
+
+  it('rejects null and different fixed values on insert but initializes absent fixed values', () => {
+    const definition = {...schema, fields: [field('geometry', 'complex'), field('fixed', 'string', {fixedValue: 'A'}),
+      field('nullable', 'string')]};
+    expect(transaction({nullable: null}, true, definition).getElementsByTagNameNS('urn:app', 'fixed')[0].textContent).toBe('A');
+    expect(() => transaction({fixed: null}, true, definition)).toThrow('invalidInsertField: {urn:app}fixed');
+    expect(() => transaction({fixed: 'B'}, true, definition)).toThrow('invalidInsertField: {urn:app}fixed');
   });
 
   it('rejects unsafe XML names, unknown namespaces and non-scalar XML attributes before history', () => {

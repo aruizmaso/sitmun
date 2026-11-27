@@ -140,6 +140,13 @@ export class WfsEditingPermissionsService implements OnDestroy {
       finally { if (state.changing === change) state.changing = undefined; }
     });
     this.replace(state, control, 'sitmunPermissionFailure', (error: any) => {
+      if (typeof error?.reason === 'string' && error.reason.startsWith('invalidInsertField: ')) {
+        const message = document.createElement('span');
+        message.textContent = this.translate.instant('wfsEditing.invalidInsertField') + ' ' +
+          error.reason.slice('invalidInsertField: '.length);
+        state.map.toast?.(message.innerHTML);
+        return;
+      }
       if (error?.reason === 'syncUnknown') {
         this.message(state, 'featureAttribute.saveOutcomeUnknown');
         return;
@@ -616,7 +623,7 @@ export class WfsEditingPermissionsService implements OnDestroy {
             !schema.fields.some((field) => field.name === geometryName && field.namespace === geometries[0].namespace)))) {
         throw new Error('unverified');
       }
-      return (transaction: Element) => serializeWfsAttributeTransaction(transaction, inserts, updates, schema, geometryName);
+      return (transaction: Element) => serializeWfsAttributeTransaction(transaction, inserts, updates, schema, geometryName, access.generated);
     });
     this.replace(state, editable, 'sitmunPrepareAttributeTransaction', (transaction: Element) =>
       enforceWfsAttributeTransaction(transaction, effectiveWfsAttributeAccess(state.profile, logical), this.namespaces(editable)));

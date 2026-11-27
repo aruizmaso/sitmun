@@ -1,6 +1,9 @@
 {
+  "wfsEditing.invalidInsertField": "Impossible de synchroniser le nouvel objet. Ouvrez le formulaire et vérifiez ce champ :",
   "featureAttribute.pendingProtectedChange": "Ce champ protégé contient une modification en attente. La valeur d’origine est affichée ; la modification n’a pas été abandonnée.",
   "featureAttribute.protectedField": "La tâche n’autorise pas la modification de cet attribut sur les objets existants.",
+  "featureAttribute.generatedField": "Ce champ ne peut pas être modifié car il est marqué comme étant généré automatiquement.",
+  "featureAttribute.nullReadUnknown": "Le service n’a pas permis de confirmer si le champ est nul ou absent. Nul n’est pas sélectionné.",
   "featureAttribute.attributeForbidden": "Le lot entier a été refusé en raison de modifications d’attributs non autorisées. Les brouillons sont conservés. Champs en conflit :",
   "featureAttribute.discardRejected": "Abandonner explicitement les modifications des champs refusés",
   "featureAttribute.localAttributeForbidden": "Certaines modifications du formulaire ne sont plus autorisées et ne sont pas encore appliquées. Champs concernés :",

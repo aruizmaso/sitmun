@@ -11,7 +11,7 @@ import {
 import { FeatureAttributeFormComponent } from '../ui/components/feature-attribute-form/feature-attribute-form.component';
 import {
   AttributeData, AttributeFormField, AttributeInput,
-  attributeValuesEqual, copyWfsAttributeData, mergeAttributeDraft, parseAttributeInput
+  attributeDataEntries, attributeValuesEqual, copyWfsAttributeData, mergeAttributeDraft, parseAttributeInput
 } from '../utils/feature-attribute-draft';
 import { createPatchManager, PatchManager } from '../utils/patch-manager';
 import {
@@ -19,8 +19,10 @@ import {
 } from '../utils/wfs-attribute-fields';
 import {
   loadVerifiedWfsAttributeSchema,
-  WfsAttributeSchema
+  WfsAttributeSchema,
+  WfsFeatureTypeIdentity
 } from '../utils/wfs-attribute-schema';
+import { mergeVerifiedGeoJsonProperties, verifiedGeoJsonFeature } from '../utils/wfs-attribute-read';
 import { assertWfsAttributeValue } from '../utils/wfs-attribute-transaction';
 import {nativeWfsAttribute, projectWfsAttributeAccess, WfsAttributeAccess, wfsAttributeIdentity} from '../utils/wfs-attribute-policy';
 import {
@@ -48,6 +50,8 @@ interface EditingSession {
   panelRef?: MapFeaturePanelRef;
   view?: ComponentRef<FeatureAttributeFormComponent>;
   base?: AttributeData;
+  readOverlay: AttributeData;
+  unknownReadFields: Set<string>;
   fields: AttributeFormField[];
   mappedFields: AttributeFormField[];
   attributeMappings: WeakMap<object, AttributeFormField[]>;
@@ -330,6 +334,8 @@ export class FeatureAttributeEditingService implements OnDestroy {
       acceptedClose: false,
       fields: [],
       mappedFields: [],
+      readOverlay: {},
+      unknownReadFields: new Set(),
       attributeMappings: new WeakMap(),
       issues: [],
       applying: false,
@@ -596,6 +602,8 @@ export class FeatureAttributeEditingService implements OnDestroy {
     session.currentFeature = feature;
     session.localConflict = undefined;
     session.base = undefined;
+    session.readOverlay = {};
+    session.unknownReadFields.clear();
     session.fields = [];
     session.mappedFields = [];
     session.preservationFailed = false;
@@ -655,6 +663,8 @@ export class FeatureAttributeEditingService implements OnDestroy {
   ): Promise<void> {
     const view = session.view;
     if (!view || !session.panelRef?.isCurrent) return;
+    session.readOverlay = {};
+    session.unknownReadFields.clear();
     this.updateView(session, { state: 'loading', fields: [], issues: [] });
 
     try {
@@ -688,15 +698,64 @@ export class FeatureAttributeEditingService implements OnDestroy {
         issues.push('Native layer metadata could not be read; fields remain read-only');
       }
       const metadata = resolveNativeAttributeMetadata(schema, metadataResult.metadata, featureType);
-      let fields: AttributeFormField[] = [];
-      session.preservationFailed = false;
+      const rawData = feature.getData?.() ?? feature.data ?? {};
+      let rawDataSafe = true;
       try {
-        fields = this.toViewFields(session, schema, feature, metadata, issues.length > 0);
-        session.base = copyWfsAttributeData(feature.getData?.() ?? feature.data ?? {}, session.mappedFields);
+        attributeDataEntries(rawData);
       } catch (error) {
         if (!(error instanceof Error) || error.message !== 'unsafeData') throw error;
+        rawDataSafe = false;
+      }
+      const initialFields = rawDataSafe
+        ? attributeFormFields(schema, rawData, metadata, issues.length > 0,
+          (key) => this.text(key), false, session.attributeMappings.get(feature))
+        : [];
+      if (rawDataSafe && session.wfsEdit.sitmunIsNewFeature?.(feature) !== true) {
+        try {
+          const properties = await this.readGeoJsonProperties(layer, feature, schema, featureType);
+          if (!this.isCurrent(session, feature, generation) ||
+              layerContext.some((value, index) => value !== getLayerContext()[index])) return;
+          const beforeLayer = session.wfsEdit.getLayerEditData?.()?.beforeEditLayer;
+          const beforeFeature = beforeLayer?.getFeatureById?.(feature.id) ??
+            beforeLayer?.features?.find((item: any) => item.id === feature.id);
+          const beforeData = beforeFeature?.getData?.() ?? {};
+          const beforeFields = attributeFormFields(schema, beforeData, metadata, issues.length > 0,
+            (key) => this.text(key), false, initialFields);
+          const protectedFields = new Set(initialFields.flatMap((item) => {
+            if (!item.schema || item.present) return [];
+            const original = beforeFields.find((candidate) =>
+              candidate.schema?.name === item.schema!.name && candidate.schema.namespace === item.schema!.namespace);
+            return original?.present ? [wfsAttributeIdentity(item.schema)] : [];
+          }));
+          const reconciled = mergeVerifiedGeoJsonProperties(rawData, schema, initialFields, properties, protectedFields);
+          session.readOverlay = Object.fromEntries(Object.entries(reconciled.data)
+            .filter(([key, value]) => !Object.hasOwn(rawData, key) || rawData[key] !== value));
+          session.unknownReadFields = reconciled.unknownFields;
+        } catch {
+          if (!this.isCurrent(session, feature, generation) ||
+              layerContext.some((value, index) => value !== getLayerContext()[index])) return;
+          for (const field of schema.fields) {
+            if (['http://www.opengis.net/gml', 'http://www.opengis.net/gml/3.2'].includes(field.namespace)) continue;
+            const identity = `{${field.namespace}}${field.name}`;
+            const mapped = initialFields.find((item) =>
+              item.schema?.name === field.name && item.schema.namespace === field.namespace);
+            if (mapped && !mapped.present) session.unknownReadFields.add(identity);
+          }
+        }
+      }
+      let fields: AttributeFormField[] = [];
+      session.preservationFailed = !rawDataSafe;
+      if (rawDataSafe) {
+        try {
+          fields = this.toViewFields(session, schema, feature, metadata, issues.length > 0);
+          session.base = copyWfsAttributeData({...rawData, ...session.readOverlay}, session.mappedFields);
+        } catch (error) {
+          if (!(error instanceof Error) || error.message !== 'unsafeData') throw error;
+          session.base = undefined;
+          session.preservationFailed = true;
+        }
+      } else {
         session.base = undefined;
-        session.preservationFailed = true;
       }
       session.schema = schema;
       // A declared data property named id is distinct from the external WFS fid.
@@ -739,6 +798,73 @@ export class FeatureAttributeEditingService implements OnDestroy {
     }
   }
 
+  private async readGeoJsonProperties(
+    layer: any,
+    feature: any,
+    schema: WfsAttributeSchema,
+    identity: WfsFeatureTypeIdentity
+  ): Promise<Record<string, unknown>> {
+    const bounded = async <T>(request: () => Promise<T>): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          Promise.resolve().then(request),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error('Explicit WFS JSON read deadline exceeded')), 10000);
+          })
+        ]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    };
+    const featureId = feature.id;
+    const sourceUrl = layer.url ?? layer.options?.url;
+    if (typeof featureId !== 'string' || !featureId.trim() || typeof sourceUrl !== 'string' ||
+        typeof layer.proxificationTool?.fetchJSON !== 'function') throw new Error('Explicit WFS JSON read unavailable');
+    const capabilities = await bounded(() => layer.getWFSCapabilities()) as {
+      version?: string;
+      Operations?: { GetFeature?: { outputFormat?: unknown } };
+    } | undefined;
+    const formats = capabilities?.Operations?.GetFeature?.outputFormat;
+    if (!Array.isArray(formats)) throw new Error('WFS JSON output format is not advertised');
+    const outputFormat = formats.find((format: unknown) => typeof format === 'string' &&
+      format.toLowerCase().startsWith('application/json'));
+    if (!outputFormat) throw new Error('WFS JSON output format is not advertised');
+    const configured = Array.isArray(layer.featureType) ? layer.featureType : [layer.featureType];
+    if (configured.length !== 1 || typeof configured[0] !== 'string') throw new Error('Ambiguous WFS feature type');
+    let typeName = configured[0];
+    if (!typeName.includes(':')) {
+      const prefix = layer.featurePrefix ?? layer.options?.featurePrefix ??
+        Object.keys(schema.namespaces ?? {}).find((name) => schema.namespaces?.[name] === identity.namespaceURI);
+      if (prefix && schema.namespaces?.[prefix] !== identity.namespaceURI) throw new Error('Unverified WFS feature QName');
+      typeName = prefix ? `${prefix}:${typeName}` : typeName;
+    } else {
+      const [prefix, local] = typeName.split(':');
+      if (typeName.split(':').length !== 2 || local !== identity.localName ||
+          schema.namespaces?.[prefix] !== identity.namespaceURI) throw new Error('Unverified WFS feature QName');
+    }
+    if (typeName.split(':').at(-1) !== identity.localName) throw new Error('Unverified WFS feature type');
+    const version = String(capabilities?.version ?? layer.options?.version ?? '1.1.0');
+    const baseUrl = new URL(sourceUrl, document.baseURI);
+    const reserved = new Set(['service', 'request', 'version', 'typename', 'typenames', 'featureid', 'resourceid', 'outputformat']);
+    if ([...baseUrl.searchParams.keys()].some((key) => reserved.has(key.toLowerCase()))) {
+      throw new Error('WFS service URL already contains operation parameters');
+    }
+    const rawUrl = /^[a-z][a-z\d+.-]*:/i.test(sourceUrl) ? sourceUrl : baseUrl.href;
+    const hashIndex = rawUrl.indexOf('#');
+    const beforeHash = hashIndex < 0 ? rawUrl : rawUrl.slice(0, hashIndex);
+    const hash = hashIndex < 0 ? '' : rawUrl.slice(hashIndex);
+    const query = [
+      ['service', 'WFS'], ['request', 'GetFeature'], ['version', version],
+      [version.startsWith('2.') ? 'typeNames' : 'typeName', typeName],
+      [version.startsWith('2.') ? 'resourceId' : 'featureID', featureId],
+      ['outputFormat', outputFormat]
+    ].map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join('&');
+    const separator = beforeHash.includes('?') ? beforeHash.endsWith('?') || beforeHash.endsWith('&') ? '' : '&' : '?';
+    const response = await bounded(() => layer.proxificationTool.fetchJSON(`${beforeHash}${separator}${query}${hash}`));
+    return verifiedGeoJsonFeature(response, featureId, typeName).properties;
+  }
+
   private toViewFields(
     session: EditingSession,
     schema: WfsAttributeSchema,
@@ -748,12 +874,13 @@ export class FeatureAttributeEditingService implements OnDestroy {
   ): AttributeFormField[] {
     const access = this.attributeAccess(session, schema);
     const isNew = session.wfsEdit.sitmunIsNewFeature?.(feature) === true;
-    const data = feature.getData?.() ?? feature.data ?? {};
+    const data = {...(feature.getData?.() ?? feature.data ?? {}), ...session.readOverlay};
     session.mappedFields = attributeFormFields(schema, data, metadata,
-      schemaHasIssues, (key) => this.text(key), isNew, session.attributeMappings.get(feature));
+      schemaHasIssues, (key) => this.text(key), isNew, session.attributeMappings.get(feature), session.unknownReadFields);
     copyWfsAttributeData(data, session.mappedFields);
     session.attributeMappings.set(feature, session.mappedFields);
-    const fields = projectWfsAttributeAccess(session.mappedFields, access, isNew, this.text('featureAttribute.protectedField'));
+    const fields = projectWfsAttributeAccess(session.mappedFields, access, isNew,
+      this.text('featureAttribute.protectedField'), this.text('featureAttribute.generatedField'));
     const beforeLayer = session.wfsEdit.getLayerEditData?.()?.beforeEditLayer;
     const before = (beforeLayer?.getFeatureById?.(feature.id) ?? beforeLayer?.features?.find((item: any) => item.id === feature.id))?.getData?.();
     if (isNew || !before) return fields;
@@ -797,7 +924,7 @@ export class FeatureAttributeEditingService implements OnDestroy {
     try {
       session.fields = this.toViewFields(session, session.schema, session.currentFeature,
         session.metadata, session.issues.length > 0);
-      session.base = copyWfsAttributeData(session.currentFeature.getData(), session.mappedFields);
+      session.base = copyWfsAttributeData({...session.currentFeature.getData(), ...session.readOverlay}, session.mappedFields);
       session.preservationFailed = false;
       session.view?.setInput('error', '');
       session.view?.setInput('conflictNames', []);
@@ -852,14 +979,14 @@ export class FeatureAttributeEditingService implements OnDestroy {
       if (session.preservationFailed || !session.base) throw new Error('unsafeData');
       const schema = session.schema;
       const access = this.attributeAccess(session, schema);
-      const live = feature.getData();
+      const live = {...feature.getData(), ...session.readOverlay};
       const mapped = attributeFormFields(schema, live, session.metadata, false, (key) => this.text(key),
         session.wfsEdit.sitmunIsNewFeature?.(feature) === true, session.mappedFields);
       const current = copyWfsAttributeData(live, mapped);
       // Reject live properties added after the form snapshot; never silently
       // drop session data or confuse hidden GML infrastructure with a new field.
       if (Object.keys(current).some((name) => !isHiddenGmlAttribute(schema, name) &&
-          !nativeWfsAttribute(access, name, schema.namespaces)?.generated &&
+          !nativeWfsAttribute(access, name, schema.namespaces) &&
           !session.fields.some((field) => field.name === name && field.schema))) {
         throw new Error('unverified');
       }
@@ -872,7 +999,7 @@ export class FeatureAttributeEditingService implements OnDestroy {
             (!present || attributeValuesEqual(field, proposed, session.base![key]))) return false;
         const identity = field ? wfsAttributeIdentity(field) : '';
         const verified = access.schema?.attributes.find((attribute) => wfsAttributeIdentity(attribute) === identity);
-        return !verified || verified.generated || verified.geometry ||
+        return !verified || verified.generated || access.generated?.has(identity) || verified.geometry ||
           session.wfsEdit.sitmunIsNewFeature?.(feature) !== true && !access.editable.has(identity);
       }).map(([key]) => key);
       if (denied.length) {
@@ -898,7 +1025,12 @@ export class FeatureAttributeEditingService implements OnDestroy {
       }
       session.applying = true;
       view?.setInput('busy', true);
-      await applyNativeAttributeData(session.editControl, feature, merged.data, mapped);
+      await applyNativeAttributeData(session.editControl, feature, {...feature.getData(), ...merged.delta}, mapped);
+      for (const key of Object.keys(merged.delta)) {
+        delete session.readOverlay[key];
+        const field = mapped.find((item) => item.name === key)?.schema;
+        if (field) session.unknownReadFields.delete(wfsAttributeIdentity(field));
+      }
       if (this.isCurrent(session, feature, generation)) this.refreshForm(session);
     } catch (error) {
       const key = error instanceof Error ? error.message : '';
@@ -1428,6 +1560,8 @@ export class FeatureAttributeEditingService implements OnDestroy {
     session.currentContextKey = null;
     session.dirty = false;
     session.base = undefined;
+    session.readOverlay = {};
+    session.unknownReadFields.clear();
     session.fields = [];
     session.mappedFields = [];
     session.preservationFailed = false;

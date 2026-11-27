@@ -130,6 +130,67 @@ describe('FeatureAttributeEditingService', () => {
 
     expect(panels.open).not.toHaveBeenCalled();
   });
+
+  it('reads explicit JSON through the configured proxy for the exact WFS feature id', async () => {
+    const response = {type: 'FeatureCollection', features: [
+      {type: 'Feature', id: 'shops.534', properties: {employees: null}}
+    ]};
+    const layer = {
+      url: 'https://sitmun.test/middleware/proxy/12/4/WFS/9404/9404?tenant=a+b&signature=x%2Fy',
+      featureType: ['menorca:shops'],
+      getWFSCapabilities: async () => ({
+        version: '1.1.0',
+        Operations: {GetFeature: {outputFormat: ['text/xml; subtype=gml/3.1.1', 'application/json']}}
+      }),
+      proxificationTool: {fetchJSON: jest.fn().mockResolvedValue(response)}
+    };
+    const schema = {
+      featureType: '{http://menorca}shops',
+      namespaces: {menorca: 'http://menorca'},
+      fields: [],
+      issues: []
+    };
+    const properties = await service['readGeoJsonProperties'](
+      layer, {id: 'shops.534'}, schema as any, {namespaceURI: 'http://menorca', localName: 'shops'}
+    );
+    expect(properties).toEqual({employees: null});
+    const request = new URL(layer.proxificationTool.fetchJSON.mock.calls[0][0]);
+    expect(request.pathname).toBe('/middleware/proxy/12/4/WFS/9404/9404');
+    expect(request.searchParams.get('featureID')).toBe('shops.534');
+    expect(request.searchParams.get('typeName')).toBe('menorca:shops');
+    expect(request.searchParams.get('outputFormat')).toBe('application/json');
+    expect(request.searchParams.get('service')).toBe('WFS');
+    expect(layer.proxificationTool.fetchJSON).toHaveBeenCalledWith(expect.stringContaining(
+      '?tenant=a+b&signature=x%2Fy&service=WFS&'
+    ));
+  });
+
+  it('does not attempt an unadvertised JSON representation or accept a mismatched feature response', async () => {
+    const proxificationTool = {fetchJSON: jest.fn()};
+    const layer = {
+      url: 'https://sitmun.test/middleware/proxy/12/4/WFS/9404/9404',
+      featureType: ['menorca:shops'],
+      getWFSCapabilities: async () => ({
+        version: '1.1.0', Operations: {GetFeature: {outputFormat: ['text/xml; subtype=gml/3.1.1']}}
+      }),
+      proxificationTool
+    };
+    const schema = {featureType: '{http://menorca}shops', namespaces: {menorca: 'http://menorca'}, fields: [], issues: []};
+    await expect(service['readGeoJsonProperties'](
+      layer, {id: 'shops.534'}, schema as any, {namespaceURI: 'http://menorca', localName: 'shops'}
+    )).rejects.toThrow('not advertised');
+    expect(proxificationTool.fetchJSON).not.toHaveBeenCalled();
+
+    layer.getWFSCapabilities = async () => ({
+      version: '1.1.0', Operations: {GetFeature: {outputFormat: ['application/json']}}
+    });
+    proxificationTool.fetchJSON = jest.fn().mockResolvedValue({type: 'FeatureCollection', features: [
+      {type: 'Feature', id: 'shops.535', properties: {employees: null}}
+    ]});
+    await expect(service['readGeoJsonProperties'](
+      layer, {id: 'shops.534'}, schema as any, {namespaceURI: 'http://menorca', localName: 'shops'}
+    )).rejects.toThrow('invalidFeatureIdentity');
+  });
 });
 
 describe('phase 3 form/session coordination', () => {

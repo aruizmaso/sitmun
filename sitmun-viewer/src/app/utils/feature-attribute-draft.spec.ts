@@ -1,6 +1,6 @@
 import {
   AttributeFormField, assertAttributeDataSafe, attributeInput, fieldValidationSupported,
-  copyWfsAttributeData, mergeAttributeDraft, parseAttributeInput
+  copyWfsAttributeData, initialWfsAttributeInput, mergeAttributeDraft, parseAttributeInput
 } from './feature-attribute-draft';
 import { WfsAttributeField } from './wfs-attribute-schema';
 
@@ -13,6 +13,16 @@ const field = (value: unknown, overrides: Partial<WfsAttributeField> = {}): Attr
 });
 
 describe('attribute draft validation and three-way merge', () => {
+  it('prioritizes fixed and default values, then simple initial values without inventing dates', () => {
+    expect(initialWfsAttributeInput(schema({fixedValue: 'fixed', defaultValue: 'default'}))?.text).toBe('fixed');
+    expect(initialWfsAttributeInput(schema({defaultValue: 'default'}))?.text).toBe('default');
+    expect(initialWfsAttributeInput(schema({type: 'string'}))?.text).toBe('');
+    expect(initialWfsAttributeInput(schema({type: 'int'}))?.text).toBe('0');
+    expect(initialWfsAttributeInput(schema({type: 'boolean'}))?.text).toBe('false');
+    expect(initialWfsAttributeInput(schema({type: 'date'}))).toBeUndefined();
+    expect(initialWfsAttributeInput(schema({type: 'complex'}))).toBeUndefined();
+  });
+
   it('distinguishes absent, null, false, zero and empty string', () => {
     expect(attributeInput(undefined, false)).toEqual({ presence: 'absent', text: '' });
     expect(attributeInput(undefined, true)).toEqual({ presence: 'absent', text: '' });
@@ -21,6 +31,11 @@ describe('attribute draft validation and three-way merge', () => {
     expect(parseAttributeInput(schema(), { presence: 'absent', text: '' })).toBeUndefined();
     expect(parseAttributeInput(schema({ type: 'boolean' }), { presence: 'value', text: '0' })).toBe(false);
     expect(parseAttributeInput(schema({ type: 'int' }), { presence: 'value', text: '0' })).toBe(0);
+  });
+
+  it.each(['A', ''])('rejects null for fixed value %j', (fixedValue) => {
+    expect(() => parseAttributeInput(schema({fixedValue}), {presence: 'null', text: ''})).toThrow('notNullable');
+    expect(parseAttributeInput(schema({fixedValue}), {presence: 'value', text: fixedValue})).toBe(fixedValue);
   });
 
   it.each(['', '1.2', 'NaN', '2147483648', '-2147483649', '-0'])('rejects invalid int %j without coercion', (text) => {
@@ -92,6 +107,25 @@ describe('attribute draft validation and three-way merge', () => {
   ])('allows %s as a lossless lexical value', (type, text) => {
     expect(parseAttributeInput(schema({ type }), { presence: 'value', text })).toBe(text);
   });
+
+  it.each(['2025-99-99', '2025-02-29', '2024-04-31', '2024-01-01+14:01', '0000-01-01', 'not a date'])(
+    'rejects an invalid date %s', (text) => {
+      expect(() => parseAttributeInput(schema({ type: 'date' }), { presence: 'value', text })).toThrow('invalidValue');
+    }
+  );
+
+  it.each(['2024-02-29', '2000-02-29Z', '2026-11-02+14:00'])(
+    'accepts a valid date %s', (text) => {
+      expect(parseAttributeInput(schema({ type: 'date' }), { presence: 'value', text })).toBe(text);
+    }
+  );
+
+  it.each([['time', '25:00:00'], ['time', '24:00:01'], ['time', '12:00:00+14:30'],
+    ['dateTime', '2025-02-29T12:00:00'], ['dateTime', '2025-01-01T99:00:00']])(
+    'rejects invalid %s %s', (type, text) => {
+      expect(() => parseAttributeInput(schema({type}), {presence: 'value', text})).toThrow('invalidValue');
+    }
+  );
 
   it('compares numeric facets without rounding and preserves numbers or exact text on merge', () => {
     const decimal = schema({ type: 'decimal', facets: [{ name: 'maxInclusive', value: '1.0000000000000000001' }] });

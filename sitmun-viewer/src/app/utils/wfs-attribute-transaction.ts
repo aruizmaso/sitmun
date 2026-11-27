@@ -1,4 +1,4 @@
-import { assertAttributeDataSafe } from './feature-attribute-draft';
+import { assertAttributeDataSafe, AttributeInput, attributeInput, fieldUsesJson, initialWfsAttributeInput, parseAttributeInput } from './feature-attribute-draft';
 import { WfsAttributeField, WfsAttributeSchema } from './wfs-attribute-schema';
 
 interface NativeTransactionFeature {
@@ -11,6 +11,16 @@ const XSI = 'http://www.w3.org/2001/XMLSchema-instance';
 const XMLNS = 'http://www.w3.org/2000/xmlns/';
 const XML = 'http://www.w3.org/XML/1998/namespace';
 const xmlName = /^[\p{L}_][\p{L}\p{N}_.\-\u00B7]*(?::[\p{L}_][\p{L}\p{N}_.\-\u00B7]*)?$/u;
+
+function validateInsertValue(field: WfsAttributeField, input: AttributeInput | undefined): unknown {
+  try {
+    if (!input) throw new Error('required');
+    return parseAttributeInput(field, input);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : 'invalidValue';
+    throw new Error(`invalidInsertField: {${field.namespace}}${field.name} (${reason})`);
+  }
+}
 
 function namespaceFor(name: string, schema: WfsAttributeSchema, fallback: string): string {
   if (!xmlName.test(name)) throw new Error('invalidValue');
@@ -81,7 +91,8 @@ function appendValue(node: Element, value: unknown, schema: WfsAttributeSchema, 
   }
 }
 
-function rewriteInsert(node: Element, feature: NativeTransactionFeature, schema: WfsAttributeSchema, nativeGeometryName: string): void {
+function rewriteInsert(node: Element, feature: NativeTransactionFeature, schema: WfsAttributeSchema, nativeGeometryName: string,
+  generated: ReadonlySet<string>): void {
   if (`{${node.namespaceURI ?? ''}}${node.localName}` !== schema.featureType) throw new Error('unverified');
   const geometries = schema.fields.filter((field) => field.name === nativeGeometryName);
   const geometry = node.firstElementChild;
@@ -94,8 +105,20 @@ function rewriteInsert(node: Element, feature: NativeTransactionFeature, schema:
     const field = definition(schema, key);
     if (!field || field === geometries[0] || attributes.has(field) ||
         (key.includes(':') && namespaceFor(key, schema, '') !== field.namespace)) throw new Error('unverified');
-    assertWfsAttributeValue(value, schema);
+    if (generated.has(`{${field.namespace}}${field.name}`)) continue;
     attributes.set(field, { key, value });
+  }
+  // Resolve all aliases before validating values, so duplicate keys cannot be
+  // masked by an invalid value on whichever alias happens to be visited first.
+  for (const [field, attribute] of attributes) {
+    try {
+      assertWfsAttributeValue(attribute.value, schema);
+      if (attribute.value !== null && !fieldUsesJson(field) && typeof attribute.value === 'object') throw new Error('invalidValue');
+      validateInsertValue(field, attributeInput(attribute.value, true, field));
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('invalidInsertField:')) throw error;
+      throw new Error(`invalidInsertField: {${field.namespace}}${field.name} (${error instanceof Error ? error.message : 'invalidValue'})`);
+    }
   }
 
   // The native insert contains only geometry. Rebuild the other properties in
@@ -105,8 +128,13 @@ function rewriteInsert(node: Element, feature: NativeTransactionFeature, schema:
     if (field === geometries[0]) {
       staging.appendChild(geometry);
     } else {
-      const attribute = attributes.get(field);
-      if (!attribute) continue;
+      if (['http://www.opengis.net/gml', 'http://www.opengis.net/gml/3.2'].includes(field.namespace) ||
+          generated.has(`{${field.namespace}}${field.name}`)) continue;
+      let attribute = attributes.get(field);
+      if (!attribute) {
+        const initial = initialWfsAttributeInput(field);
+        attribute = {key: field.name, value: validateInsertValue(field, initial)};
+      }
       const { key, value } = attribute;
       const normalized = field.type === 'list' && Array.isArray(value) ? value.join(' ') : value;
       appendElement(staging, key, normalized, schema, field.namespace);
@@ -121,7 +149,8 @@ export function serializeWfsAttributeTransaction(
   inserts: readonly NativeTransactionFeature[],
   updates: readonly NativeTransactionFeature[],
   schema: WfsAttributeSchema,
-  nativeGeometryName?: string
+  nativeGeometryName?: string,
+  generated: ReadonlySet<string> = new Set()
 ): void {
   const wfs = transaction.namespaceURI!;
   const insertNodes = Array.from(transaction.children).filter((node) => node.localName === 'Insert').flatMap((node) => Array.from(node.children));
@@ -130,8 +159,8 @@ export function serializeWfsAttributeTransaction(
   const rewriteUpdate = (node: Element, feature: NativeTransactionFeature): void => {
     for (const key of feature.getKeys()) {
       const value = feature.get(key);
-      if (key === feature.getGeometryName() || key === 'gml:boundedBy' || value == null ||
-          typeof (value as { getSimplifiedGeometry?: unknown }).getSimplifiedGeometry === 'function') continue;
+      if (key === feature.getGeometryName() || key === 'gml:boundedBy' || value === undefined ||
+          (value !== null && typeof (value as { getSimplifiedGeometry?: unknown }).getSimplifiedGeometry === 'function')) continue;
       const field = definition(schema, key);
       if (typeof value !== 'object' && field?.type !== 'list') continue;
       if (!field) throw new Error('unverified');
@@ -142,12 +171,14 @@ export function serializeWfsAttributeTransaction(
         Array.from(child.children).some((item) => ['Name', 'ValueReference'].includes(item.localName) && item.textContent === key));
       if (!property) throw new Error('unverified');
       Array.from(property.children).filter((child) => child.localName === 'Value').forEach((child) => child.remove());
+      if (normalized === null && wfs === 'http://www.opengis.net/wfs' &&
+          transaction.getAttribute('version') === '1.1.0') continue;
       const target = node.ownerDocument.createElementNS(wfs, 'Value');
       property.appendChild(target);
       if (Array.isArray(normalized)) normalized.forEach((item) => appendElement(target, key, item, schema, namespace));
       else appendValue(target, normalized, schema, namespace);
     }
   };
-  inserts.forEach((feature, index) => rewriteInsert(insertNodes[index], feature, schema, nativeGeometryName ?? feature.getGeometryName()));
+  inserts.forEach((feature, index) => rewriteInsert(insertNodes[index], feature, schema, nativeGeometryName ?? feature.getGeometryName(), generated));
   updates.forEach((feature, index) => rewriteUpdate(updateNodes[index], feature));
 }

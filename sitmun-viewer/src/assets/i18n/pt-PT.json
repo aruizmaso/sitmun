@@ -1,6 +1,9 @@
 {
+  "wfsEditing.invalidInsertField": "Não é possível sincronizar o novo elemento. Abra o formulário e verifique este campo:",
   "featureAttribute.pendingProtectedChange": "Este campo protegido tem uma alteração pendente. É apresentado o valor original; a alteração não foi descartada.",
   "featureAttribute.protectedField": "A tarefa não autoriza a alteração deste atributo nos elementos existentes.",
+  "featureAttribute.generatedField": "Este campo não pode ser editado porque está marcado como gerado automaticamente.",
+  "featureAttribute.nullReadUnknown": "O serviço não permitiu confirmar se o campo é nulo ou está ausente. Nulo não está selecionado.",
   "featureAttribute.attributeForbidden": "A operação foi rejeitada na íntegra por conter alterações não autorizadas. Os rascunhos foram mantidos. Campos em conflito:",
   "featureAttribute.discardRejected": "Descartar explicitamente as alterações dos campos rejeitados",
   "featureAttribute.localAttributeForbidden": "Algumas alterações no formulário já não são autorizadas e não foram aplicadas. Campos em conflito:",

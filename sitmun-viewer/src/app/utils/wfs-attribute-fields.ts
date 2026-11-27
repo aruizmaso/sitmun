@@ -1,4 +1,4 @@
-import { AttributeData, AttributeFormField, attributeDataEntries, attributeInput, fieldUsesJson, fieldValidationSupported } from './feature-attribute-draft';
+import { AttributeData, AttributeFormField, attributeDataEntries, initialWfsAttributeInput, fieldUsesJson, fieldValidationSupported } from './feature-attribute-draft';
 import { WfsAttributeField, WfsAttributeSchema, WfsFeatureTypeIdentity } from './wfs-attribute-schema';
 
 interface NativeAttribute {
@@ -93,7 +93,8 @@ export function attributeFormFields(
   schemaHasIssues: boolean,
   text: (key: string) => string,
   provisional = false,
-  previousFields: readonly AttributeFormField[] = []
+  previousFields: readonly AttributeFormField[] = [],
+  unknownFields: ReadonlySet<string> = new Set()
 ): AttributeFormField[] {
   // Do not execute accessors even when the form cannot preserve the data.
   attributeDataEntries(data);
@@ -147,10 +148,10 @@ export function attributeFormFields(
     if (isHiddenGmlAttribute(schema, name)) continue;
     const formSchema = value !== null && typeof value === 'object' && !fieldUsesJson(field) ? { ...field, type: 'complex' } : field;
     const present = dataKey !== undefined && Object.hasOwn(data, dataKey) && value !== undefined;
-    fields.push({ name, schema: formSchema, value, present,
+    fields.push({ name, schema: formSchema, value, present, provisional,
+      readUnknown: !present && unknownFields.has(`{${field.namespace}}${field.name}`),
       verified: reasons.length === 0, editable: reasons.length === 0, reasons: [...new Set(reasons)],
-      initialInput: !present && provisional && field.defaultValue !== null && !reasons.length
-        ? attributeInput(field.defaultValue, true, field) : undefined });
+      initialInput: !present && provisional && !reasons.length ? initialWfsAttributeInput(field) : undefined });
   }
   for (const name of Object.keys(data)) {
     if (known.has(name) || isHiddenGmlAttribute(schema, name)) continue;
